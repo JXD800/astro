@@ -1,9 +1,10 @@
 libraries I used:
 pandas
 numpy
-matplotlib.pyplot
+matplotlib
 astropy.time
 astropy.units
 tkinter
-matplotlib.backends.backend_tkagg
+
+pip install pandas numpy matplotlib astropy tk requests
 
