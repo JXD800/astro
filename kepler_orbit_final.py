@@ -85,8 +85,10 @@ def calc_position():
     selected_planet = planet_var.get()
     filt = kepler_data[(kepler_data['star_name'].str.lower() == selected_star.lower()) &
                        (kepler_data['name'].str.lower() == selected_planet.lower())]
-    if filt.empty: messagebox.showerror("Dados não encontrados", f"A combinação para a estrela '{select_star}' e o planeta '{select_planet}' não foi encontrada./n/n" "verifique se um planeta foi selecionado corretamente para a estrela escolhida.")
+    if filt.empty: messagebox.showerror("Dados não encontrados", f"A combinação para a estrela '{selected_star}' e o planeta '{selected_planet}' não foi encontrada.\n\n" "verifique se um planeta foi selecionado corretamente para a estrela escolhida."
+)
 return
+
     p = filt.iloc[0]
     output.delete('1.0', tk.END)
     output.insert(tk.END, f"[EXOPLANET]\nName: {p['name']}\nSemi-Major Axis: {p['semi_major_axis']} AU\n")
