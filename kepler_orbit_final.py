@@ -89,9 +89,9 @@ def calc_position():
 )
 return
 
-    p = filt.iloc[0]
-    output.delete('1.0', tk.END)
-    output.insert(tk.END, f"[EXOPLANET]\nName: {p['name']}\nSemi-Major Axis: {p['semi_major_axis']} AU\n")
+p = filt.iloc[0]
+output.delete('1.0', tk.END)
+output.insert(tk.END, f"[EXOPLANET]\nName: {p['name']}\nSemi-Major Axis: {p['semi_major_axis']} AU\n")
     output.insert(tk.END, f"Period: {p['orbital_period']} days\nRadius: {p['radius']} Rj\nMass: {p['mass']} Mj\n")
     output.insert(tk.END, f"[STAR]\nName: {p['star_name']}\nTemp: {p['star_temp']} K\nSpectral Type: {p['star_type']}\n")
     output.insert(tk.END, f"HR Class: {get_hr_position(p['star_temp'])}\n")
