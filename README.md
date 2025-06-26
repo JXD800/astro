@@ -5,8 +5,9 @@ matplotlib
 astropy.time
 astropy.units
 tkinter
+scipy
 
-pip install pandas numpy matplotlib astropy tk requests
+pip install pandas numpy matplotlib astropy tk requests scipy
 
 --Creating virtual environment for Python--
 
