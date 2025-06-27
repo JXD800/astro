@@ -86,17 +86,34 @@ def plot_star_spectrum():
     ax.clear()
 
     T = float(temp)
-    wavelengths = np.linspace(100e-9, 3000e-9, 500)
+    wavelengths = np.linspace(100e-9, 3000e-9, 500) # Wavelengths in meters
+    
     # Calculate Planck's law for black-body radiation
     spectral_radiance = (2 * H_PLANCK * C_LIGHT**2 / wavelengths**5) / \
                         (np.exp(H_PLANCK * C_LIGHT / (wavelengths * K_BOLTZMANN * T)) - 1)
 
-    ax.plot(wavelengths * 1e9, spectral_radiance, color='orange')
+    # --- FIX: NORMALIZE THE DATA ---
+    # This scales the plot so the peak is always at 1.0 for clear visualization.
+    # It prevents the y-axis from becoming excessively large.
+    max_radiance = np.max(spectral_radiance)
+    if max_radiance > 0:
+        normalized_radiance = spectral_radiance / max_radiance
+    else:
+        normalized_radiance = spectral_radiance # Avoid division by zero if all values are zero
+
+    # Plot the FIXED normalized data
+    ax.plot(wavelengths * 1e9, normalized_radiance, color='orange', linewidth=2)
     ax.set_title(f"Black-Body Spectrum of {selected_star} (T≈{T:,.0f} K)", fontsize=10)
     ax.set_xlabel("Wavelength (nm)")
-    ax.set_ylabel("Intensity / Spectral Radiance")
+    
+    # --- FIX: UPDATE THE Y-AXIS LABEL ---
+    ax.set_ylabel("Normalized Intensity")
     ax.set_facecolor("white")
     ax.grid(True, linestyle='--', alpha=0.6)
+    
+    # --- FIX: Set clean Y-axis limits ---
+    ax.set_ylim(0, 1.1)
+
     canvas.draw()
     output.delete('1.0', tk.END)
     output.insert(tk.END, f"[INFO] Displaying stellar spectrum for {selected_star}.\n"
