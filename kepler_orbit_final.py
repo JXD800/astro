@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import requests
 from io import StringIO
-from typing import Optional
+from typing import Optional, List
 
 # Matplotlib and SciPy imports for plotting and calculations
 import matplotlib.pyplot as plt
@@ -31,7 +31,7 @@ def load_kepler_data() -> pd.DataFrame:
         response = requests.get(url, timeout=30)
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
-        messagebox.showerror("Network Error", f"Failed to fetch data: {e}")
+        messagebox.showerror("Network Error", f"Failed to fetch PS data: {e}")
         return pd.DataFrame()
 
     csv_data = response.content.decode("utf-8")
@@ -44,6 +44,61 @@ def load_kepler_data() -> pd.DataFrame:
         'st_teff': 'star_temp', 'st_spectype': 'star_type', 'sy_dist': 'star_distance'
     })
     return kepler_data
+
+# --- NEW SEPARATED FUNCTION TO FETCH ATMOSPHERE DATA ---
+def fetch_atmosphere_data(planet_name: str) -> List[str]:
+    """
+    Fetches detected molecules for a specific planet from the 'molecules' table.
+    This is a separate, targeted query.
+    """
+    # URL encodes the planet name to handle spaces, etc.
+    encoded_planet_name = requests.utils.quote(planet_name)
+    url = (
+        "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?"
+        f"query=select+molecule+from+molecules+where+pl_name='{encoded_planet_name}'&format=csv"
+    )
+    try:
+        response = requests.get(url, timeout=20)
+        response.raise_for_status()
+        data = pd.read_csv(StringIO(response.content.decode("utf-8")))
+        if not data.empty:
+            return data['molecule'].tolist()
+    except Exception:
+        # Fails silently to not interrupt user if the service is down
+        return []
+    return []
+
+# --- NEW FUNCTION TO CHECK AND DISPLAY ATMOSPHERE INFO ---
+def check_atmosphere():
+    """Controller function called by the new button."""
+    planet_name = planet_var.get()
+    if not planet_name:
+        messagebox.showwarning("No Planet Selected", "Please select a star and a planet first.")
+        return
+
+    # Show a "loading" message
+    messagebox.showinfo("Fetching Data", f"Checking for atmospheric data for {planet_name}...\n\nThis may take a moment.", icon='info')
+    
+    molecules = fetch_atmosphere_data(planet_name)
+
+    if not molecules:
+        messagebox.showinfo("No Data", f"No specific atmospheric composition data was found for {planet_name} in the NASA database.")
+        return
+
+    # Check for presence of C, H, O
+    has_C = any('C' in m for m in molecules)
+    has_H = any('H' in m for m in molecules)
+    has_O = any('O' in m for m in molecules)
+
+    # Format the results message
+    results_text = f"Atmospheric Detections for {planet_name}:\n\n"
+    results_text += f"Detected Molecules: {', '.join(molecules)}\n\n"
+    results_text += f"- Carbon (C) Presence: {'✅ Detected' if has_C else '❌ Not Detected'}\n"
+    results_text += f"- Hydrogen (H) Presence: {'✅ Detected' if has_H else '❌ Not Detected'}\n"
+    results_text += f"- Oxygen (O) Presence: {'✅ Detected' if has_O else '❌ Not Detected'}\n"
+
+    messagebox.showinfo("Atmosphere Composition", results_text)
+
 
 def get_hr_position(temp: Optional[float]) -> str:
     """Determines a star's spectral class from its temperature."""
@@ -204,7 +259,6 @@ def search_stars(event=None):
 
 def update_plots_and_planets(event=None):
     """Master update function called on new star selection."""
-    # First, update the available planets
     planets = sorted(kepler_data[kepler_data['star_name'] == star_var.get()]['name'].tolist())
     planet_combo['values'] = planets
     if planets:
@@ -212,7 +266,6 @@ def update_plots_and_planets(event=None):
     else:
         planet_var.set('')
     
-    # Now, automatically update the visualization tabs
     plot_star_spectrum()
     plot_hr_diagram()
 
@@ -289,7 +342,6 @@ ttk.Label(left_panel, text="Select Star:").pack(anchor='w')
 star_var = tk.StringVar()
 star_combo = ttk.Combobox(left_panel, textvariable=star_var, values=host_stars, state='readonly')
 star_combo.pack(fill='x', pady=(0,5))
-# *** BIND STAR SELECTION TO MASTER UPDATE FUNCTION ***
 star_combo.bind("<<ComboboxSelected>>", update_plots_and_planets)
 
 ttk.Label(left_panel, text="Select Planet:").pack(anchor='w')
@@ -299,9 +351,11 @@ planet_combo.pack(fill='x')
 
 ttk.Separator(left_panel).pack(fill='x', pady=10)
 ttk.Label(left_panel, text="Actions", font="-weight bold").pack(pady=5)
-# *** REMOVED THE PLOT BUTTONS ***
 ttk.Button(left_panel, text="Animate Selected Orbit", command=calc_position).pack(pady=2, fill='x')
 ttk.Button(left_panel, text="Show Distance to Earth", command=calc_distance_to_earth).pack(pady=2, fill='x')
+# *** NEW BUTTON FOR ATMOSPHERE CHECK ***
+ttk.Button(left_panel, text="Check Atmosphere Composition", command=check_atmosphere).pack(pady=2, fill='x')
+
 
 ttk.Separator(left_panel).pack(fill='x', pady=10)
 ttk.Button(left_panel, text="Exit", command=root.destroy).pack(side='bottom', pady=5, fill='x')
@@ -309,7 +363,6 @@ ttk.Button(left_panel, text="Exit", command=root.destroy).pack(side='bottom', pa
 # Initialize the application state
 if host_stars:
     star_var.set(host_stars[0])
-    # Initial call to populate everything on startup
     update_plots_and_planets()
 
 root.mainloop()
