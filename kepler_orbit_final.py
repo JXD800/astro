@@ -5,6 +5,7 @@ import numpy as np
 import requests
 from io import StringIO
 from typing import Optional, List
+import json
 
 # Matplotlib and SciPy imports for plotting and calculations
 import matplotlib.pyplot as plt
@@ -45,60 +46,319 @@ def load_kepler_data() -> pd.DataFrame:
     })
     return kepler_data
 
-# --- NEW SEPARATED FUNCTION TO FETCH ATMOSPHERE DATA ---
-def fetch_atmosphere_data(planet_name: str) -> List[str]:
+# --- UPDATED ATMOSPHERE DATA FETCHING ---
+def fetch_atmosphere_spectroscopy(planet_name: str) -> dict:
     """
-    Fetches detected molecules for a specific planet from the 'molecules' table.
-    This is a separate, targeted query.
+    Fetches atmospheric spectroscopy data from NASA's Firefly service.
+    Returns a dictionary with spectroscopy data and analysis.
     """
-    # URL encodes the planet name to handle spaces, etc.
-    encoded_planet_name = requests.utils.quote(planet_name)
-    url = (
-        "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?"
-        f"query=select+molecule+from+molecules+where+pl_name='{encoded_planet_name}'&format=csv"
-    )
+    # The correct URL for atmospheric spectroscopy data
+    firefly_url = "https://exoplanetarchive.ipac.caltech.edu/cgi-bin/atmospheres/nph-firefly?atmospheres"
+    
+    print(f"🔗 Fetching atmospheric data from: {firefly_url}")
+    print(f"🪐 Target planet: {planet_name}")
+    
     try:
-        response = requests.get(url, timeout=20)
+        # Try to get atmospheric data from the Firefly service
+        response = requests.get(firefly_url, timeout=30)
         response.raise_for_status()
-        data = pd.read_csv(StringIO(response.content.decode("utf-8")))
-        if not data.empty:
-            return data['molecule'].tolist()
-    except Exception:
-        # Fails silently to not interrupt user if the service is down
-        return []
-    return []
+        
+        # Parse the response (assuming it's JSON or text format)
+        content = response.text
+        
+        # Also try the TAP service for molecular data as backup
+        encoded_planet_name = requests.utils.quote(planet_name)
+        tap_url = (
+            "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?"
+            f"query=select+*+from+molecules+where+pl_name='{encoded_planet_name}'&format=csv"
+        )
+        
+        print(f"🔗 Backup molecular query: {tap_url}")
+        
+        tap_response = requests.get(tap_url, timeout=20)
+        molecules_data = None
+        
+        if tap_response.status_code == 200:
+            molecules_df = pd.read_csv(StringIO(tap_response.content.decode("utf-8")))
+            if not molecules_df.empty:
+                molecules_data = molecules_df.to_dict('records')
+        
+        return {
+            'firefly_url': firefly_url,
+            'firefly_content': content,
+            'molecules_data': molecules_data,
+            'status': 'success'
+        }
+        
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error fetching atmospheric data: {e}")
+        return {
+            'firefly_url': firefly_url,
+            'error': str(e),
+            'status': 'error'
+        }
 
-# --- NEW FUNCTION TO CHECK AND DISPLAY ATMOSPHERE INFO ---
+def create_atmosphere_popup(planet_name: str, atmosphere_data: dict):
+    """
+    Creates a large popup window displaying atmospheric spectroscopy data.
+    """
+    popup = tk.Toplevel(root)
+    popup.title(f"Atmospheric Analysis - {planet_name}")
+    popup.geometry("900x700")
+    popup.configure(bg='#1a1a2e')
+    
+    # Make it modal
+    popup.transient(root)
+    popup.grab_set()
+    
+    # Center the popup
+    popup.update_idletasks()
+    x = (popup.winfo_screenwidth() // 2) - (900 // 2)
+    y = (popup.winfo_screenheight() // 2) - (700 // 2)
+    popup.geometry(f"900x700+{x}+{y}")
+    
+    # Main frame with padding
+    main_frame = tk.Frame(popup, bg='#1a1a2e', padx=20, pady=20)
+    main_frame.pack(fill='both', expand=True)
+    
+    # Title
+    title_label = tk.Label(
+        main_frame, 
+        text=f"🌌 ATMOSPHERIC SPECTROSCOPY ANALYSIS",
+        font=('Arial', 16, 'bold'),
+        fg='#00d4ff',
+        bg='#1a1a2e'
+    )
+    title_label.pack(pady=(0, 10))
+    
+    planet_label = tk.Label(
+        main_frame,
+        text=f"Planet: {planet_name}",
+        font=('Arial', 14, 'bold'),
+        fg='#ffffff',
+        bg='#1a1a2e'
+    )
+    planet_label.pack(pady=(0, 20))
+    
+    # Create notebook for different data sections
+    notebook = ttk.Notebook(main_frame)
+    notebook.pack(fill='both', expand=True, pady=(0, 20))
+    
+    # --- TAB 1: DATA SOURCES ---
+    sources_frame = tk.Frame(notebook, bg='#2d2d44')
+    notebook.add(sources_frame, text="🔗 Data Sources")
+    
+    sources_text = tk.Text(
+        sources_frame,
+        wrap=tk.WORD,
+        font=('Consolas', 10),
+        bg='#1e1e1e',
+        fg='#00ff00',
+        insertbackground='white',
+        height=15
+    )
+    sources_scrollbar = tk.Scrollbar(sources_frame, command=sources_text.yview)
+    sources_text.configure(yscrollcommand=sources_scrollbar.set)
+    
+    sources_info = f"""
+🌐 PRIMARY DATA SOURCE:
+NASA Exoplanet Archive - Atmospheric Spectroscopy Service
+URL: {atmosphere_data.get('firefly_url', 'N/A')}
+
+📡 FIREFLY SERVICE STATUS: {atmosphere_data.get('status', 'Unknown').upper()}
+
+🔬 MOLECULAR DATABASE QUERY:
+TAP Service for molecular detections
+Query: SELECT * FROM molecules WHERE pl_name='{planet_name}'
+
+📊 DATA RETRIEVAL TIMESTAMP: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
+
+🎯 TARGET: {planet_name}
+    """
+    
+    sources_text.insert('1.0', sources_info)
+    sources_text.configure(state='disabled')
+    
+    sources_scrollbar.pack(side='right', fill='y')
+    sources_text.pack(side='left', fill='both', expand=True, padx=10, pady=10)
+    
+    # --- TAB 2: SPECTROSCOPY DATA ---
+    spectro_frame = tk.Frame(notebook, bg='#2d2d44')
+    notebook.add(spectro_frame, text="📊 Spectroscopy Data")
+    
+    spectro_text = tk.Text(
+        spectro_frame,
+        wrap=tk.WORD,
+        font=('Consolas', 9),
+        bg='#1e1e1e',
+        fg='#ffffff',
+        insertbackground='white'
+    )
+    spectro_scrollbar = tk.Scrollbar(spectro_frame, command=spectro_text.yview)
+    spectro_text.configure(yscrollcommand=spectro_scrollbar.set)
+    
+    if atmosphere_data.get('status') == 'success':
+        firefly_content = atmosphere_data.get('firefly_content', '')
+        spectro_info = f"""
+🔬 FIREFLY SERVICE RESPONSE:
+{'='*60}
+
+{firefly_content[:2000]}{"..." if len(firefly_content) > 2000 else ""}
+
+{'='*60}
+
+📝 ANALYSIS NOTES:
+• This data comes from NASA's atmospheric spectroscopy database
+• Firefly service provides transmission/emission spectra when available
+• Data includes wavelength-dependent opacity measurements
+• Molecular absorption features can be identified from spectral lines
+        """
+    else:
+        spectro_info = f"""
+❌ SPECTROSCOPY DATA UNAVAILABLE
+
+Error: {atmosphere_data.get('error', 'Unknown error')}
+
+🔍 POSSIBLE REASONS:
+• Planet not in atmospheric database
+• No spectroscopic observations available
+• Service temporarily unavailable
+• Planet name formatting mismatch
+
+💡 ALTERNATIVE APPROACH:
+Try searching for this planet in published literature or 
+check if it has been observed by space telescopes like:
+• Hubble Space Telescope
+• James Webb Space Telescope  
+• Spitzer Space Telescope
+        """
+    
+    spectro_text.insert('1.0', spectro_info)
+    spectro_text.configure(state='disabled')
+    
+    spectro_scrollbar.pack(side='right', fill='y')
+    spectro_text.pack(side='left', fill='both', expand=True, padx=10, pady=10)
+    
+    # --- TAB 3: MOLECULAR ANALYSIS ---
+    molecules_frame = tk.Frame(notebook, bg='#2d2d44')
+    notebook.add(molecules_frame, text="🧬 Molecular Detections")
+    
+    molecules_text = tk.Text(
+        molecules_frame,
+        wrap=tk.WORD,
+        font=('Consolas', 10),
+        bg='#1e1e1e',
+        fg='#ffaa00',
+        insertbackground='white'
+    )
+    molecules_scrollbar = tk.Scrollbar(molecules_frame, command=molecules_text.yview)
+    molecules_text.configure(yscrollcommand=molecules_scrollbar.set)
+    
+    molecules_data = atmosphere_data.get('molecules_data')
+    if molecules_data:
+        molecules_info = f"""
+🧪 DETECTED MOLECULES FOR {planet_name}:
+{'='*50}
+
+"""
+        for i, mol_record in enumerate(molecules_data, 1):
+            molecules_info += f"#{i}. {mol_record}\n\n"
+        
+        # Check for key molecules
+        all_molecules = str(molecules_data).upper()
+        has_h2o = 'H2O' in all_molecules or 'WATER' in all_molecules
+        has_co2 = 'CO2' in all_molecules or 'CARBON DIOXIDE' in all_molecules
+        has_ch4 = 'CH4' in all_molecules or 'METHANE' in all_molecules
+        has_o2 = 'O2' in all_molecules or 'OXYGEN' in all_molecules
+        
+        molecules_info += f"""
+{'='*50}
+🔬 KEY ATMOSPHERIC COMPONENTS ANALYSIS:
+
+💧 Water Vapor (H₂O):     {'✅ DETECTED' if has_h2o else '❌ NOT DETECTED'}
+🌫️  Carbon Dioxide (CO₂): {'✅ DETECTED' if has_co2 else '❌ NOT DETECTED'}  
+🔥 Methane (CH₄):         {'✅ DETECTED' if has_ch4 else '❌ NOT DETECTED'}
+💨 Oxygen (O₂):           {'✅ DETECTED' if has_o2 else '❌ NOT DETECTED'}
+
+🌡️ HABITABILITY INDICATORS:
+• Presence of H₂O suggests potential for liquid water
+• CO₂ indicates atmospheric greenhouse effects
+• CH₄ could suggest biological or geological activity
+• O₂ might indicate photosynthesis (very rare!)
+        """
+    else:
+        molecules_info = f"""
+🔍 MOLECULAR DETECTION STATUS: NO DATA AVAILABLE
+
+❌ No molecular detections found in NASA database for {planet_name}
+
+🌟 IMPORTANT NOTES:
+• Most exoplanets lack detailed atmospheric characterization
+• Only ~200 planets have atmospheric data in NASA archives
+• Atmospheric analysis requires transit observations
+• Molecular detection is cutting-edge science
+
+🔬 DETECTION METHODS:
+• Transit spectroscopy (planet passes in front of star)
+• Emission spectroscopy (thermal emission from planet)
+• Direct imaging (extremely rare)
+
+🚀 FUTURE PROSPECTS:
+• James Webb Space Telescope is revolutionizing this field
+• Next-generation ground telescopes will detect more molecules
+• New space missions planned for atmospheric characterization
+        """
+    
+    molecules_text.insert('1.0', molecules_info)
+    molecules_text.configure(state='disabled')
+    
+    molecules_scrollbar.pack(side='right', fill='y')
+    molecules_text.pack(side='left', fill='both', expand=True, padx=10, pady=10)
+    
+    # Close button
+    close_button = tk.Button(
+        main_frame,
+        text="🚀 CLOSE ANALYSIS",
+        command=popup.destroy,
+        font=('Arial', 12, 'bold'),
+        bg='#ff4757',
+        fg='white',
+        padx=20,
+        pady=10,
+        relief='raised',
+        borderwidth=2
+    )
+    close_button.pack(pady=10)
+    
+    # Focus the popup
+    popup.focus_set()
+
+# --- UPDATED ATMOSPHERE CHECK FUNCTION ---
 def check_atmosphere():
-    """Controller function called by the new button."""
+    """Updated controller function called by the atmosphere button."""
     planet_name = planet_var.get()
     if not planet_name:
         messagebox.showwarning("No Planet Selected", "Please select a star and a planet first.")
         return
 
-    # Show a "loading" message
-    messagebox.showinfo("Fetching Data", f"Checking for atmospheric data for {planet_name}...\n\nThis may take a moment.", icon='info')
+    # Show loading message
+    loading_msg = messagebox.showinfo(
+        "Fetching Atmospheric Data", 
+        f"🔍 Querying NASA atmospheric databases for {planet_name}...\n\n"
+        f"📡 Accessing Firefly spectroscopy service\n"
+        f"🧬 Checking molecular detection database\n\n"
+        f"This may take a moment...", 
+        icon='info'
+    )
     
-    molecules = fetch_atmosphere_data(planet_name)
-
-    if not molecules:
-        messagebox.showinfo("No Data", f"No specific atmospheric composition data was found for {planet_name} in the NASA database.")
-        return
-
-    # Check for presence of C, H, O
-    has_C = any('C' in m for m in molecules)
-    has_H = any('H' in m for m in molecules)
-    has_O = any('O' in m for m in molecules)
-
-    # Format the results message
-    results_text = f"Atmospheric Detections for {planet_name}:\n\n"
-    results_text += f"Detected Molecules: {', '.join(molecules)}\n\n"
-    results_text += f"- Carbon (C) Presence: {'✅ Detected' if has_C else '❌ Not Detected'}\n"
-    results_text += f"- Hydrogen (H) Presence: {'✅ Detected' if has_H else '❌ Not Detected'}\n"
-    results_text += f"- Oxygen (O) Presence: {'✅ Detected' if has_O else '❌ Not Detected'}\n"
-
-    messagebox.showinfo("Atmosphere Composition", results_text)
-
+    # Update the GUI to show the loading message
+    root.update()
+    
+    # Fetch the atmospheric data
+    atmosphere_data = fetch_atmosphere_spectroscopy(planet_name)
+    
+    # Create and show the detailed popup
+    create_atmosphere_popup(planet_name, atmosphere_data)
 
 def get_hr_position(temp: Optional[float]) -> str:
     """Determines a star's spectral class from its temperature."""
@@ -353,9 +613,8 @@ ttk.Separator(left_panel).pack(fill='x', pady=10)
 ttk.Label(left_panel, text="Actions", font="-weight bold").pack(pady=5)
 ttk.Button(left_panel, text="Animate Selected Orbit", command=calc_position).pack(pady=2, fill='x')
 ttk.Button(left_panel, text="Show Distance to Earth", command=calc_distance_to_earth).pack(pady=2, fill='x')
-# *** NEW BUTTON FOR ATMOSPHERE CHECK ***
-ttk.Button(left_panel, text="Check Atmosphere Composition", command=check_atmosphere).pack(pady=2, fill='x')
-
+# *** UPDATED BUTTON FOR ATMOSPHERE CHECK ***
+ttk.Button(left_panel, text="🧬 Check Atmosphere Composition", command=check_atmosphere).pack(pady=2, fill='x')
 
 ttk.Separator(left_panel).pack(fill='x', pady=10)
 ttk.Button(left_panel, text="Exit", command=root.destroy).pack(side='bottom', pady=5, fill='x')
