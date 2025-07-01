@@ -1,10 +1,3 @@
-Understood. I will remove the buttons and make the spectrum and H-R diagram plots update automatically when you select a star or planet.
-
-This change streamlines the interface, making it more responsive and intuitive. Here is the final code with these modifications implemented.
-
-### Final Code with Automatic Plot Updates
-
-```python
 import tkinter as tk
 from tkinter import ttk, messagebox
 import pandas as pd
