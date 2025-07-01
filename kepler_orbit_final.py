@@ -1,3 +1,10 @@
+Understood. I will remove the buttons and make the spectrum and H-R diagram plots update automatically when you select a star or planet.
+
+This change streamlines the interface, making it more responsive and intuitive. Here is the final code with these modifications implemented.
+
+### Final Code with Automatic Plot Updates
+
+```python
 import tkinter as tk
 from tkinter import ttk, messagebox
 import pandas as pd
@@ -64,7 +71,8 @@ def plot_hr_diagram():
     ax_hr.clear()
     hr_data = kepler_data.dropna(subset=['star_temp', 'star_radius']).copy()
     if hr_data.empty:
-        messagebox.showinfo("No Data", "Not enough data to plot an H-R Diagram.")
+        ax_hr.text(0.5, 0.5, "Not Enough Data for H-R Diagram", ha='center', va='center')
+        canvas_hr.draw()
         return
 
     hr_data['luminosity'] = (hr_data['star_radius']**2) * (hr_data['star_temp'] / SOLAR_TEMP)**4
@@ -91,7 +99,8 @@ def plot_star_spectrum():
     selected_star = star_var.get()
     filtered = kepler_data[kepler_data['star_name'].str.lower() == selected_star.lower()]
     if filtered.empty or pd.isna(filtered.iloc[0]['star_temp']):
-        messagebox.showinfo("No Data", f"Stellar temperature for {selected_star} is not available.")
+        ax_spec.text(0.5, 0.5, "Temperature Data Not Available", ha='center', va='center')
+        canvas_spec.draw()
         return
 
     T = filtered.iloc[0]['star_temp']
@@ -200,11 +209,19 @@ def search_stars(event=None):
             f"{row.get('semi_major_axis', 0):.3f}" if pd.notna(row.get('semi_major_axis')) else 'N/A',
             row.get('discovery_year', 'N/A')))
 
-def update_planets(event=None):
-    """Updates the planet dropdown based on the selected star."""
+def update_plots_and_planets(event=None):
+    """Master update function called on new star selection."""
+    # First, update the available planets
     planets = sorted(kepler_data[kepler_data['star_name'] == star_var.get()]['name'].tolist())
     planet_combo['values'] = planets
-    planet_var.set(planets[0] if planets else '')
+    if planets:
+        planet_var.set(planets[0])
+    else:
+        planet_var.set('')
+    
+    # Now, automatically update the visualization tabs
+    plot_star_spectrum()
+    plot_hr_diagram()
 
 # --- GUI Setup ---
 kepler_data = load_kepler_data()
@@ -279,7 +296,9 @@ ttk.Label(left_panel, text="Select Star:").pack(anchor='w')
 star_var = tk.StringVar()
 star_combo = ttk.Combobox(left_panel, textvariable=star_var, values=host_stars, state='readonly')
 star_combo.pack(fill='x', pady=(0,5))
-star_combo.bind("<<ComboboxSelected>>", update_planets)
+# *** BIND STAR SELECTION TO MASTER UPDATE FUNCTION ***
+star_combo.bind("<<ComboboxSelected>>", update_plots_and_planets)
+
 ttk.Label(left_panel, text="Select Planet:").pack(anchor='w')
 planet_var = tk.StringVar()
 planet_combo = ttk.Combobox(left_panel, textvariable=planet_var, state='readonly')
@@ -287,16 +306,17 @@ planet_combo.pack(fill='x')
 
 ttk.Separator(left_panel).pack(fill='x', pady=10)
 ttk.Label(left_panel, text="Actions", font="-weight bold").pack(pady=5)
+# *** REMOVED THE PLOT BUTTONS ***
 ttk.Button(left_panel, text="Animate Selected Orbit", command=calc_position).pack(pady=2, fill='x')
-ttk.Button(left_panel, text="Plot Selected Star Spectrum", command=plot_star_spectrum).pack(pady=2, fill='x')
-ttk.Button(left_panel, text="Plot H-R Diagram", command=plot_hr_diagram).pack(pady=2, fill='x')
 ttk.Button(left_panel, text="Show Distance to Earth", command=calc_distance_to_earth).pack(pady=2, fill='x')
 
 ttk.Separator(left_panel).pack(fill='x', pady=10)
 ttk.Button(left_panel, text="Exit", command=root.destroy).pack(side='bottom', pady=5, fill='x')
 
+# Initialize the application state
 if host_stars:
     star_var.set(host_stars[0])
-    update_planets()
+    # Initial call to populate everything on startup
+    update_plots_and_planets()
 
 root.mainloop()
