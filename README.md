@@ -22,4 +22,4 @@ the cd where/you/put/the/directory
 
 --running the python app-- 
 
-python - exo-planet_analyzer.py 
+python exoplanet_analyzer.py 
