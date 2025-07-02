@@ -6,17 +6,18 @@ import requests
 from io import StringIO
 from typing import Optional, List, Dict
 
-# Matplotlib imports for plotting
+# Matplotlib and SciPy imports for plotting and calculations
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
+from matplotlib import animation
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from scipy.optimize import newton
 
-# --- Constants ---
-H_PLANCK = 6.626e-34
-C_LIGHT = 3e8
-K_BOLTZMANN = 1.381e-23
-SOLAR_TEMP = 5778
+# --- Physical and Solar Constants ---
+H_PLANCK = 6.626e-34      # Planck's constant
+C_LIGHT = 3e8             # Speed of light
+K_BOLTZMANN = 1.381e-23   # Boltzmann constant
+SOLAR_TEMP = 5778         # Sun's effective temperature in Kelvin
 
 # --- Data Loading Functions ---
 
@@ -67,7 +68,7 @@ def fetch_real_spectroscopy_data(planet_name: str) -> Optional[pd.DataFrame]:
         # Fails silently if the network or server has an issue
         return None
 
-# --- Main Application Logic ---
+# --- Atmospheric Analysis Functions ---
 
 def create_atmosphere_popup(planet_name: str, spectra_data: Optional[pd.DataFrame]):
     """Creates a popup window to display real atmospheric data or a 'no data' message."""
@@ -129,7 +130,7 @@ def check_atmosphere():
     # Create the results popup
     create_atmosphere_popup(planet_name, atmosphere_data)
 
-# ... (The rest of your application code remains the same) ...
+# --- Plotting Functions ---
 
 def plot_hr_diagram():
     """Plots a Hertzsprung-Russell diagram in its dedicated tab."""
@@ -182,6 +183,8 @@ def plot_star_spectrum():
     ax_spec.grid(True, linestyle='--', alpha=0.6)
     ax_spec.set_ylim(0, 1.1)
     canvas_spec.draw()
+
+# --- Calculation Functions ---
 
 def calc_distance_to_earth():
     """Calculates and displays the distance to the selected star."""
@@ -288,7 +291,7 @@ def update_plots_and_planets(event=None):
 
 # --- GUI Setup ---
 root = tk.Tk()
-root.title("Exoplanet Data Viewer")
+root.title("Exoplanet Data Viewer with Orbital Animation & Atmospheric Analysis")
 root.geometry("1280x800")
 
 kepler_data = load_kepler_data()
