@@ -1,6 +1,6 @@
-@echo off
-echo Activating environment and launching Kepler Orbit Viewer...
-call conda activate astrodata
-cd /d "%~dp0"
-python kepler_orbit_final_with_animation.py
+@echo off 
+echo Activating the environment, and launching it on the Kepler Orbit Viewer,... 
+call conda activate astrodata 
+cd /d "%~dp0" 
+python exoplanet_analyzer.py 
 pause
