@@ -8,7 +8,7 @@ tkinter
 scipy 
 tenacity 
 
-pip install pandas numpy matplotlib astropy tk (inside the body tag scipy tenacity
+pip install pandas numpy matplotlib astropy tk scipy pyarrow
 
 --Create a virtual environment for Python-- 
 
