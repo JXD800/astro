@@ -4,547 +4,379 @@ import pandas as pd
 import numpy as np
 import requests
 from io import StringIO
-from typing import Optional, List, Dict, Tuple
-import json
+from typing import Optional, List, Dict
+
+# Matplotlib imports for plotting
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import re
+from scipy.optimize import newton
 
-def fetch_atmosphere_spectroscopy(planet_name: str) -> dict:
-    """
-    Fetches atmospheric spectroscopy data from NASA's Firefly service.
-    Returns a dictionary with spectroscopy data and parsed spectral information.
-    """
-    # The correct URL for atmospheric spectroscopy data
-    firefly_url = "https://exoplanetarchive.ipac.caltech.edu/cgi-bin/atmospheres/nph-firefly?atmospheres"
-    
-    print(f"🔗 Fetching atmospheric data from: {firefly_url}")
-    print(f"🪐 Target planet: {planet_name}")
-    
+# --- Constants ---
+H_PLANCK = 6.626e-34
+C_LIGHT = 3e8
+K_BOLTZMANN = 1.381e-23
+SOLAR_TEMP = 5778
+
+# --- Data Loading Functions ---
+
+def load_kepler_data() -> pd.DataFrame:
+    """Fetches main exoplanet data from the NASA Exoplanet Archive."""
+    url = (
+        "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?"
+        "query=select+pl_name,hostname,pl_orbper,pl_orbsmax,pl_radj,"
+        "pl_bmassj,disc_year,pl_orbeccen,st_mass,st_rad,st_age,"
+        "st_teff,st_spectype,sy_dist+from+ps&format=csv"
+    )
     try:
-        # Query the Firefly service for atmospheric data
-        params = {
-            'planet': planet_name,
-            'format': 'json'  # Try to get structured data
-        }
-        
-        response = requests.get(firefly_url, params=params, timeout=30)
+        response = requests.get(url, timeout=30)
         response.raise_for_status()
-        
-        # Parse the response content
-        content = response.text
-        
-        # Try to extract spectral data from the response
-        spectral_data = parse_spectral_data(content, planet_name)
-        
-        # Also try the TAP service for additional molecular data
-        encoded_planet_name = requests.utils.quote(planet_name)
-        tap_url = (
-            "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?"
-            f"query=select+*+from+molecules+where+pl_name='{encoded_planet_name}'&format=csv"
-        )
-        
-        print(f"🔗 Backup molecular query: {tap_url}")
-        
-        tap_response = requests.get(tap_url, timeout=20)
-        molecules_data = None
-        
-        if tap_response.status_code == 200:
-            molecules_df = pd.read_csv(StringIO(tap_response.content.decode("utf-8")))
-            if not molecules_df.empty:
-                molecules_data = molecules_df.to_dict('records')
-        
-        return {
-            'firefly_url': firefly_url,
-            'firefly_content': content,
-            'spectral_data': spectral_data,
-            'molecules_data': molecules_data,
-            'status': 'success'
-        }
-        
+        df = pd.read_csv(StringIO(response.content.decode("utf-8")))
+        df = df.rename(columns={
+            'pl_name': 'name', 'hostname': 'star_name', 'pl_orbper': 'orbital_period',
+            'pl_orbsmax': 'semi_major_axis', 'pl_radj': 'radius', 'pl_bmassj': 'mass',
+            'disc_year': 'discovery_year', 'pl_orbeccen': 'eccentricity',
+            'st_mass': 'star_mass', 'st_rad': 'star_radius', 'st_age': 'star_age',
+            'st_teff': 'star_temp', 'st_spectype': 'star_type', 'sy_dist': 'star_distance'
+        })
+        return df
     except requests.exceptions.RequestException as e:
-        print(f"❌ Error fetching atmospheric data: {e}")
-        # Generate synthetic spectral data for demonstration
-        synthetic_data = generate_synthetic_spectrum(planet_name)
-        return {
-            'firefly_url': firefly_url,
-            'error': str(e),
-            'spectral_data': synthetic_data,
-            'status': 'synthetic'
-        }
+        messagebox.showerror("Network Error", f"Failed to fetch exoplanet data: {e}")
+        return pd.DataFrame()
 
-def parse_spectral_data(content: str, planet_name: str) -> Dict:
+def fetch_real_spectroscopy_data(planet_name: str) -> Optional[pd.DataFrame]:
     """
-    Attempts to parse spectral data from NASA response.
-    If no real data, generates synthetic data for visualization.
+    Fetches REAL atmospheric transmission spectroscopy data for a planet.
+    Queries the 'transmissionspec' table which contains high-level science products.
     """
+    encoded_planet_name = requests.utils.quote(planet_name)
+    # This URL queries the correct database table for transmission spectra
+    url = (
+        "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?"
+        f"query=select+wavelength,flux,flux_unit,wavelength_unit,instrument,facility,reference+"
+        f"from+transmissionspec+where+pl_name='{encoded_planet_name}'&format=csv"
+    )
     try:
-        # Try to parse JSON response
-        if content.strip().startswith('{') or content.strip().startswith('['):
-            data = json.loads(content)
-            if isinstance(data, list) and len(data) > 0:
-                # Extract wavelength and flux data
-                return extract_wavelength_flux(data)
-    except json.JSONDecodeError:
-        pass
-    
-    # Try to parse CSV or other structured format
-    try:
-        # Look for numerical data patterns
-        lines = content.split('\n')
-        wavelengths, fluxes = [], []
-        
-        for line in lines:
-            # Match lines with numerical data (wavelength, flux pairs)
-            numbers = re.findall(r'[-+]?(?:\d*\.\d+|\d+)', line)
-            if len(numbers) >= 2:
-                try:
-                    wavelengths.append(float(numbers[0]))
-                    fluxes.append(float(numbers[1]))
-                except ValueError:
-                    continue
-        
-        if len(wavelengths) > 10:  # Need reasonable amount of data
-            return {
-                'wavelengths': wavelengths,
-                'fluxes': fluxes,
-                'type': 'parsed',
-                'units': {'wavelength': 'microns', 'flux': 'W/m²/micron'}
-            }
-    except Exception:
-        pass
-    
-    # If no parseable data found, generate synthetic spectrum
-    return generate_synthetic_spectrum(planet_name)
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        csv_data = response.content.decode("utf-8")
+        if not csv_data.strip() or "empty" in csv_data.lower():
+            return None
+        return pd.read_csv(StringIO(csv_data))
+    except requests.exceptions.RequestException:
+        # Fails silently if the network or server has an issue
+        return None
 
-def generate_synthetic_spectrum(planet_name: str) -> Dict:
-    """
-    Generates a realistic synthetic atmospheric spectrum for demonstration.
-    """
-    # Create wavelength range (0.5 to 5.5 microns, typical for atmospheric spectroscopy)
-    wavelengths = np.linspace(0.5, 5.5, 1000)
-    
-    # Generate base continuum (blackbody-like)
-    temperature = 1500  # Typical hot Jupiter temperature
-    base_flux = 2e-14 * (wavelengths ** -4) * np.exp(-1.44e4 / (wavelengths * temperature))
-    
-    # Add noise
-    noise = np.random.normal(0, base_flux * 0.1)
-    spectrum = base_flux + noise
-    
-    # Add some absorption features at common molecular lines
-    absorption_lines = {
-        1.4: 0.3,   # H2O
-        1.9: 0.25,  # H2O
-        2.3: 0.2,   # CO
-        3.3: 0.35,  # CH4
-        4.3: 0.4,   # CO2
-    }
-    
-    for line_center, depth in absorption_lines.items():
-        # Create Gaussian absorption line
-        line_profile = depth * np.exp(-((wavelengths - line_center) / 0.05) ** 2)
-        spectrum -= line_profile * base_flux
-    
-    # Ensure no negative values
-    spectrum = np.maximum(spectrum, base_flux * 0.1)
-    
-    return {
-        'wavelengths': wavelengths.tolist(),
-        'fluxes': spectrum.tolist(),
-        'type': 'synthetic',
-        'units': {'wavelength': 'microns', 'flux': 'W/m²/micron'},
-        'note': f'Synthetic spectrum generated for {planet_name} (no real data available)'
-    }
+# --- Main Application Logic ---
 
-def extract_wavelength_flux(data: List[Dict]) -> Dict:
-    """Extract wavelength and flux from structured data."""
-    wavelengths, fluxes = [], []
-    
-    for entry in data:
-        if isinstance(entry, dict):
-            # Look for common field names
-            wave_keys = ['wavelength', 'wave', 'lambda', 'wl']
-            flux_keys = ['flux', 'intensity', 'f_lambda', 'spectrum']
-            
-            wave_val = None
-            flux_val = None
-            
-            for key in wave_keys:
-                if key in entry:
-                    wave_val = entry[key]
-                    break
-            
-            for key in flux_keys:
-                if key in entry:
-                    flux_val = entry[key]
-                    break
-            
-            if wave_val is not None and flux_val is not None:
-                try:
-                    wavelengths.append(float(wave_val))
-                    fluxes.append(float(flux_val))
-                except (ValueError, TypeError):
-                    continue
-    
-    if len(wavelengths) > 10:
-        return {
-            'wavelengths': wavelengths,
-            'fluxes': fluxes,
-            'type': 'real',
-            'units': {'wavelength': 'microns', 'flux': 'W/m²/micron'}
-        }
-    
-    return {}
-
-def create_atmosphere_popup(planet_name: str, atmosphere_data: dict):
-    """
-    Creates a spectacular atmospheric spectroscopy popup with embedded matplotlib plots.
-    """
+def create_atmosphere_popup(planet_name: str, spectra_data: Optional[pd.DataFrame]):
+    """Creates a popup window to display real atmospheric data or a 'no data' message."""
     popup = tk.Toplevel(root)
-    popup.title(f"🌌 Atmospheric Spectroscopy - {planet_name}")
-    popup.geometry("1200x800")
-    popup.configure(bg='#0a0a0a')
-    
-    # Make it modal and centered
+    popup.title(f"Atmospheric Spectrum for {planet_name}")
+    popup.geometry("800x650")
     popup.transient(root)
     popup.grab_set()
-    
-    popup.update_idletasks()
-    x = (popup.winfo_screenwidth() // 2) - (1200 // 2)
-    y = (popup.winfo_screenheight() // 2) - (800 // 2)
-    popup.geometry(f"1200x800+{x}+{y}")
-    
-    # Main container
-    main_frame = tk.Frame(popup, bg='#0a0a0a', padx=15, pady=15)
-    main_frame.pack(fill='both', expand=True)
-    
-    # Header section
-    header_frame = tk.Frame(main_frame, bg='#0a0a0a')
-    header_frame.pack(fill='x', pady=(0, 15))
-    
-    title_label = tk.Label(
-        header_frame,
-        text="🌌 ATMOSPHERIC SPECTROSCOPY ANALYSIS",
-        font=('Arial', 18, 'bold'),
-        fg='#00d4ff',
-        bg='#0a0a0a'
-    )
-    title_label.pack()
-    
-    planet_label = tk.Label(
-        header_frame,
-        text=f"Target: {planet_name}",
-        font=('Arial', 14, 'bold'),
-        fg='#ffffff',
-        bg='#0a0a0a'
-    )
-    planet_label.pack(pady=(5, 0))
-    
-    # Status indicator
-    status = atmosphere_data.get('status', 'unknown')
-    status_color = {'success': '#00ff00', 'synthetic': '#ffaa00', 'error': '#ff4444'}.get(status, '#ffffff')
-    status_text = {
-        'success': '✅ REAL DATA RETRIEVED',
-        'synthetic': '🔬 SYNTHETIC SPECTRUM GENERATED',
-        'error': '❌ DATA UNAVAILABLE'
-    }.get(status, 'STATUS UNKNOWN')
-    
-    status_label = tk.Label(
-        header_frame,
-        text=status_text,
-        font=('Arial', 12, 'bold'),
-        fg=status_color,
-        bg='#0a0a0a'
-    )
-    status_label.pack(pady=(5, 0))
-    
-    # Create notebook for different views
-    notebook = ttk.Notebook(main_frame)
-    notebook.pack(fill='both', expand=True, pady=(0, 15))
-    
-    # --- TAB 1: MAIN SPECTRUM PLOT ---
-    spectrum_frame = tk.Frame(notebook, bg='#1a1a2e')
-    notebook.add(spectrum_frame, text="📊 Atmospheric Spectrum")
-    
-    # Create the main spectral plot
-    spectral_data = atmosphere_data.get('spectral_data', {})
-    
-    if spectral_data and 'wavelengths' in spectral_data and 'fluxes' in spectral_data:
-        fig_spectrum = Figure(figsize=(12, 8), dpi=100, facecolor='#1a1a2e')
-        ax_spectrum = fig_spectrum.add_subplot(111, facecolor='#0f0f1e')
+
+    fig = Figure(figsize=(8, 5), dpi=100)
+    ax = fig.add_subplot(111)
+
+    if spectra_data is not None and not spectra_data.empty:
+        # --- PLOT THE REAL DATA ---
+        instrument = spectra_data['instrument'].iloc[0]
+        facility = spectra_data['facility'].iloc[0]
+        reference = spectra_data['reference'].iloc[0]
         
-        wavelengths = np.array(spectral_data['wavelengths'])
-        fluxes = np.array(spectral_data['fluxes'])
+        ax.plot(spectra_data['wavelength'], spectra_data['flux'], 'o-', label=f"{instrument} ({facility})")
         
-        # Create the main spectrum plot
-        ax_spectrum.plot(wavelengths, fluxes, color='#00aaff', linewidth=1.5, alpha=0.8)
-        ax_spectrum.fill_between(wavelengths, fluxes, alpha=0.3, color='#00aaff')
+        ax.set_title(f"Real Atmospheric Transmission Spectrum for {planet_name}")
+        ax.set_xlabel(f"Wavelength ({spectra_data['wavelength_unit'].iloc[0]})")
+        ax.set_ylabel(f"Flux ({spectra_data['flux_unit'].iloc[0]})")
+        ax.legend()
+        ax.grid(True, which="both", ls="--", alpha=0.5)
         
-        # Add molecular absorption markers if synthetic
-        if spectral_data.get('type') == 'synthetic':
-            molecular_lines = {
-                1.4: ('H₂O', '#ff6b6b'),
-                1.9: ('H₂O', '#ff6b6b'),
-                2.3: ('CO', '#4ecdc4'),
-                3.3: ('CH₄', '#45b7d1'),
-                4.3: ('CO₂', '#96ceb4')
-            }
-            
-            for wave, (molecule, color) in molecular_lines.items():
-                if wave >= wavelengths.min() and wave <= wavelengths.max():
-                    ax_spectrum.axvline(wave, color=color, linestyle='--', alpha=0.7, linewidth=2)
-                    ax_spectrum.text(wave, fluxes.max() * 0.9, molecule, 
-                                   rotation=90, color=color, fontweight='bold', fontsize=10)
-        
-        # Styling
-        ax_spectrum.set_xlabel('Wavelength (μm)', fontsize=14, color='white')
-        ax_spectrum.set_ylabel('Flux (W/m²/μm)', fontsize=14, color='white')
-        ax_spectrum.set_title(f'{planet_name} Atmospheric Spectrum', fontsize=16, color='#00d4ff', pad=20)
-        ax_spectrum.grid(True, alpha=0.3, color='white')
-        ax_spectrum.tick_params(colors='white', labelsize=12)
-        
-        # Set axis limits
-        ax_spectrum.set_xlim(wavelengths.min(), wavelengths.max())
-        ax_spectrum.set_ylim(0, fluxes.max() * 1.1)
-        
-        # Add data source annotation
-        data_type = spectral_data.get('type', 'unknown')
-        note_text = spectral_data.get('note', f'Data type: {data_type}')
-        ax_spectrum.text(0.02, 0.98, note_text, transform=ax_spectrum.transAxes, 
-                        fontsize=10, color='#ffaa00', verticalalignment='top',
-                        bbox=dict(boxstyle='round', facecolor='#0a0a0a', alpha=0.7))
-        
-        canvas_spectrum = FigureCanvasTkAgg(fig_spectrum, spectrum_frame)
-        canvas_spectrum.get_tk_widget().pack(fill='both', expand=True, padx=10, pady=10)
-        
+        info_text = f"Data Source: {reference}"
     else:
-        # No spectral data available
-        no_data_label = tk.Label(
-            spectrum_frame,
-            text="📡 NO SPECTRAL DATA AVAILABLE\n\nThis planet has not been observed\nwith atmospheric spectroscopy",
-            font=('Arial', 16),
-            fg='#ff6b6b',
-            bg='#1a1a2e',
-            justify='center'
-        )
-        no_data_label.pack(expand=True)
-    
-    # --- TAB 2: DATA ANALYSIS ---
-    analysis_frame = tk.Frame(notebook, bg='#2d2d44')
-    notebook.add(analysis_frame, text="🔬 Analysis Details")
-    
-    analysis_text = tk.Text(
-        analysis_frame,
-        wrap=tk.WORD,
-        font=('Consolas', 11),
-        bg='#1e1e1e',
-        fg='#00ff88',
-        insertbackground='white'
-    )
-    analysis_scrollbar = tk.Scrollbar(analysis_frame, command=analysis_text.yview)
-    analysis_text.configure(yscrollcommand=analysis_scrollbar.set)
-    
-    # Generate analysis content
-    analysis_content = f"""
-🔬 SPECTROSCOPIC ANALYSIS REPORT
-{'='*60}
+        # --- SHOW NO DATA MESSAGE ---
+        ax.text(0.5, 0.5, "No Real Atmospheric Data Found\nThis planet has not been observed with the\nnecessary instruments, or the data has not\nbeen processed into the database.",
+                ha='center', va='center', fontsize=12, color='red')
+        ax.set_title("No Data Available")
+        info_text = "No published spectral data found in the NASA Exoplanet Archive."
 
-🎯 TARGET: {planet_name}
-📡 DATA SOURCE: {atmosphere_data.get('firefly_url', 'N/A')}
-📊 STATUS: {atmosphere_data.get('status', 'Unknown').upper()}
+    canvas = FigureCanvasTkAgg(fig, master=popup)
+    canvas.draw()
+    canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-"""
-    
-    if spectral_data:
-        analysis_content += f"""
-📈 SPECTRAL DATA SUMMARY:
-• Wavelength Range: {min(spectral_data['wavelengths']):.2f} - {max(spectral_data['wavelengths']):.2f} μm
-• Number of Data Points: {len(spectral_data['wavelengths'])}
-• Flux Range: {min(spectral_data['fluxes']):.2e} - {max(spectral_data['fluxes']):.2e} W/m²/μm
-• Data Type: {spectral_data.get('type', 'Unknown').upper()}
+    info_label = ttk.Label(popup, text=info_text, wraplength=780, justify='center')
+    info_label.pack(side=tk.BOTTOM, pady=10)
 
-🧪 MOLECULAR ANALYSIS:
-"""
-        if spectral_data.get('type') == 'synthetic':
-            analysis_content += """
-• H₂O (Water): Strong absorption at 1.4 & 1.9 μm
-• CO (Carbon Monoxide): Absorption feature at 2.3 μm  
-• CH₄ (Methane): Absorption band at 3.3 μm
-• CO₂ (Carbon Dioxide): Strong absorption at 4.3 μm
-
-⚠️  NOTE: This is a synthetic spectrum for demonstration.
-   Real atmospheric data requires space telescope observations.
-"""
-        else:
-            analysis_content += """
-• Analysis of real spectroscopic data
-• Molecular features detected from actual observations
-• Data processed from NASA atmospheric database
-"""
-    
-    analysis_content += f"""
-
-🌡️ ATMOSPHERIC SCIENCE CONTEXT:
-• Atmospheric spectroscopy reveals molecular composition
-• Absorption lines indicate specific molecules in atmosphere
-• Temperature and pressure affect spectral line shapes
-• Multi-wavelength observations provide 3D atmospheric structure
-
-🚀 OBSERVATION TECHNIQUES:
-• Transit Spectroscopy: Planet passes in front of star
-• Emission Spectroscopy: Direct thermal emission from planet
-• Phase Curve Analysis: Atmospheric dynamics from orbital motion
-
-📚 SCIENTIFIC SIGNIFICANCE:
-• Habitability assessment through molecular detections
-• Atmospheric evolution and dynamics studies  
-• Comparative planetology with Solar System worlds
-• Search for biosignature molecules
-"""
-    
-    analysis_text.insert('1.0', analysis_content)
-    analysis_text.configure(state='disabled')
-    
-    analysis_scrollbar.pack(side='right', fill='y')
-    analysis_text.pack(side='left', fill='both', expand=True, padx=10, pady=10)
-    
-    # --- TAB 3: MOLECULAR DETECTIONS ---
-    molecules_frame = tk.Frame(notebook, bg='#2d2d44')
-    notebook.add(molecules_frame, text="🧬 Molecular Database")
-    
-    molecules_text = tk.Text(
-        molecules_frame,
-        wrap=tk.WORD,
-        font=('Consolas', 10),
-        bg='#1e1e1e',
-        fg='#ffaa00',
-        insertbackground='white'
-    )
-    molecules_scrollbar = tk.Scrollbar(molecules_frame, command=molecules_text.yview)
-    molecules_text.configure(yscrollcommand=molecules_scrollbar.set)
-    
-    molecules_data = atmosphere_data.get('molecules_data')
-    molecules_content = f"""
-🧪 MOLECULAR DETECTION DATABASE
-{'='*50}
-
-🎯 PLANET: {planet_name}
-🔍 QUERY: NASA Exoplanet Archive molecular database
-
-"""
-    
-    if molecules_data:
-        molecules_content += f"✅ FOUND {len(molecules_data)} DETECTION RECORDS:\n\n"
-        for i, record in enumerate(molecules_data, 1):
-            molecules_content += f"#{i}. {record}\n\n"
-    else:
-        molecules_content += """❌ NO MOLECULAR DETECTIONS IN DATABASE
-
-🔬 POSSIBLE REASONS:
-• Planet not observed with atmospheric spectroscopy
-• Observations lack sufficient signal-to-noise ratio
-• Data not yet processed or published
-• Planet name mismatch in database query
-
-🌟 ATMOSPHERIC CHARACTERIZATION STATUS:
-• Only ~200 exoplanets have atmospheric data
-• Requires specialized space telescope observations
-• Most productive: Hubble, Spitzer, JWST
-• Ground-based observations limited by Earth's atmosphere
-
-🚀 FUTURE PROSPECTS:
-• James Webb Space Telescope revolutionizing field
-• Next-generation ground telescopes (ELT, TMT)
-• Specialized atmospheric characterization missions
-• Improved data analysis techniques
-"""
-    
-    molecules_text.insert('1.0', molecules_content)
-    molecules_text.configure(state='disabled')
-    
-    molecules_scrollbar.pack(side='right', fill='y')
-    molecules_text.pack(side='left', fill='both', expand=True, padx=10, pady=10)
-    
-    # Bottom control panel
-    control_frame = tk.Frame(main_frame, bg='#0a0a0a')
-    control_frame.pack(fill='x', pady=(10, 0))
-    
-    # Data source info
-    source_label = tk.Label(
-        control_frame,
-        text=f"🔗 Data Source: {atmosphere_data.get('firefly_url', 'N/A')}",
-        font=('Arial', 10),
-        fg='#888888',
-        bg='#0a0a0a'
-    )
-    source_label.pack(side='left')
-    
-    # Close button
-    close_button = tk.Button(
-        control_frame,
-        text="🚀 CLOSE ANALYSIS",
-        command=popup.destroy,
-        font=('Arial', 12, 'bold'),
-        bg='#ff4757',
-        fg='white',
-        padx=30,
-        pady=8,
-        relief='raised',
-        borderwidth=2
-    )
-    close_button.pack(side='right')
-    
-    # Focus the popup
-    popup.focus_set()
-
-# Updated main function to call the atmospheric analysis
 def check_atmosphere():
-    """Enhanced controller function for atmospheric analysis with plotting."""
+    """Controller function to fetch and display atmospheric data."""
     planet_name = planet_var.get()
     if not planet_name:
         messagebox.showwarning("No Planet Selected", "Please select a star and a planet first.")
         return
 
-    # Show loading message
-    loading = tk.Toplevel(root)
-    loading.title("Loading...")
-    loading.geometry("400x150")
-    loading.configure(bg='#1a1a2e')
-    loading.transient(root)
-    loading.grab_set()
+    # Show a simple loading message
+    root.config(cursor="watch")
+    root.update()
+
+    # Fetch the data
+    atmosphere_data = fetch_real_spectroscopy_data(planet_name)
     
-    # Center loading window
-    loading.update_idletasks()
-    x = (loading.winfo_screenwidth() // 2) - (200)
-    y = (loading.winfo_screenheight() // 2) - (75)
-    loading.geometry(f"400x150+{x}+{y}")
+    # Restore cursor
+    root.config(cursor="")
     
-    loading_label = tk.Label(
-        loading,
-        text=f"🔍 Querying NASA Atmospheric Databases\n\n📡 Target: {planet_name}\n🌌 Fetching spectroscopy data...",
-        font=('Arial', 12),
-        fg='#00d4ff',
-        bg='#1a1a2e',
-        justify='center'
-    )
-    loading_label.pack(expand=True)
+    # Create the results popup
+    create_atmosphere_popup(planet_name, atmosphere_data)
+
+# ... (The rest of your application code remains the same) ...
+
+def plot_hr_diagram():
+    """Plots a Hertzsprung-Russell diagram in its dedicated tab."""
+    ax_hr.clear()
+    hr_data = kepler_data.dropna(subset=['star_temp', 'star_radius']).copy()
+    if hr_data.empty:
+        ax_hr.text(0.5, 0.5, "Not Enough Data for H-R Diagram", ha='center', va='center')
+        canvas_hr.draw()
+        return
+
+    hr_data['luminosity'] = (hr_data['star_radius']**2) * (hr_data['star_temp'] / SOLAR_TEMP)**4
+    ax_hr.scatter(hr_data['star_temp'], hr_data['luminosity'], alpha=0.3, s=5, label='Exoplanet Host Stars')
+
+    selected_star_data = hr_data[hr_data['star_name'] == star_var.get()]
+    if not selected_star_data.empty:
+        star = selected_star_data.iloc[0]
+        ax_hr.scatter(star['star_temp'], star['luminosity'], color='red', s=50, edgecolor='black', zorder=5, label=f'Selected: {star_var.get()}')
+
+    ax_hr.set_yscale('log')
+    ax_hr.set_xscale('log')
+    ax_hr.set_xlim(ax_hr.get_xlim()[::-1])
+    ax_hr.set_title("Hertzsprung-Russell Diagram")
+    ax_hr.set_xlabel("Effective Temperature (K)")
+    ax_hr.set_ylabel("Luminosity (Solar Units)")
+    ax_hr.grid(True, which="both", ls="--", alpha=0.5)
+    ax_hr.legend()
+    canvas_hr.draw()
+
+def plot_star_spectrum():
+    """Plots the star's black-body radiation spectrum in its dedicated tab."""
+    ax_spec.clear()
+    selected_star = star_var.get()
+    filtered = kepler_data[kepler_data['star_name'].str.lower() == selected_star.lower()]
+    if filtered.empty or pd.isna(filtered.iloc[0]['star_temp']):
+        ax_spec.text(0.5, 0.5, "Temperature Data Not Available", ha='center', va='center')
+        canvas_spec.draw()
+        return
+
+    T = filtered.iloc[0]['star_temp']
+    wavelengths = np.linspace(100e-9, 3000e-9, 500)
+    spectral_radiance = (2*H_PLANCK*C_LIGHT**2/wavelengths**5) / (np.exp(H_PLANCK*C_LIGHT/(wavelengths*K_BOLTZMANN*T)) - 1)
     
-    loading.update()
+    max_radiance = np.max(spectral_radiance)
+    normalized_radiance = spectral_radiance / max_radiance if max_radiance > 0 else spectral_radiance
+
+    ax_spec.plot(wavelengths * 1e9, normalized_radiance, color='orange', linewidth=2)
+    ax_spec.set_title(f"Black-Body Spectrum of {selected_star} (T≈{T:,.0f} K)")
+    ax_spec.set_xlabel("Wavelength (nm)")
+    ax_spec.set_ylabel("Normalized Intensity")
+    ax_spec.grid(True, linestyle='--', alpha=0.6)
+    ax_spec.set_ylim(0, 1.1)
+    canvas_spec.draw()
+
+def calc_distance_to_earth():
+    """Calculates and displays the distance to the selected star."""
+    selected_star = star_var.get()
+    filtered = kepler_data[kepler_data['star_name'].str.lower() == selected_star.lower()]
+    if filtered.empty: return
+        
+    dist = filtered.iloc[0]['star_distance']
+    if pd.notna(dist):
+        dist_ly = dist * 3.26156
+        msg = f"Distance to {selected_star}: {dist:.2f} parsecs ({dist_ly:.2f} light-years)"
+    else:
+        msg = f"Distance to {selected_star}: Unknown"
+    messagebox.showinfo("Distance to Earth", msg)
+
+def calc_position():
+    """Calculates and animates the planet's orbit."""
+    selected_star, selected_planet = star_var.get(), planet_var.get()
+    filt = kepler_data[(kepler_data['star_name'] == selected_star) & (kepler_data['name'] == selected_planet)]
+                       
+    if filt.empty:
+        messagebox.showerror("Data Not Found", f"Could not find data for planet '{selected_planet}' orbiting '{selected_star}'.")
+        return
+
+    p = filt.iloc[0]
+    output.delete('1.0', tk.END)
+    output.insert(tk.END, f"[EXOPLANET]\nName: {p['name']}\nSemi-Major Axis: {p.get('semi_major_axis', 'N/A')} AU\n")
+    output.insert(tk.END, f"Period: {p.get('orbital_period', 'N/A')} days\nRadius: {p.get('radius', 'N/A')} Rj\nMass: {p.get('mass', 'N/A')} Mj\n")
+    output.insert(tk.END, f"Eccentricity: {p.get('eccentricity', 'N/A')}\n\n[STAR]\nName: {p['star_name']}\nTemp: {p['star_temp']} K\n")
+
+    if hasattr(canvas_orbit, 'ani') and canvas_orbit.ani:
+        canvas_orbit.ani.event_source.stop()
+
+    ax_orbit.clear()
     
     try:
-        # Fetch the atmospheric data
-        atmosphere_data = fetch_atmosphere_spectroscopy(planet_name)
-        
-        # Close loading window
-        loading.destroy()
-        
-        # Create and show the enhanced popup with plots
-        create_atmosphere_popup(planet_name, atmosphere_data)
-        
-    except Exception as e:
-        loading.destroy()
-        messagebox.showerror("Error", f"Failed to fetch atmospheric data: {e}")
+        a = float(p['semi_major_axis'])
+        period_days = float(p['orbital_period'])
+        ecc = float(p['eccentricity']) if pd.notna(p['eccentricity']) else 0.0
 
-# This replaces the previous check_atmosphere function in your main code
+        b = a * np.sqrt(1 - ecc**2)
+        theta = np.linspace(0, 2 * np.pi, 360)
+        x_orb, y_orb = a * (np.cos(theta) - ecc), b * np.sin(theta)
+
+        ax_orbit.plot(x_orb, y_orb, 'w--', alpha=0.5)
+        ax_orbit.plot(0, 0, 'o', color='gold', markersize=12)
+        ax_orbit.set_title(f"Orbit of {p['name']}", fontsize=10)
+        ax_orbit.set_facecolor("black")
+        ax_orbit.set_xlim(-a * 1.5, a * 1.5); ax_orbit.set_ylim(-a * 1.5, a * 1.5)
+        ax_orbit.set_aspect('equal', adjustable='box'); ax_orbit.grid(True, linestyle='--', color='gray', alpha=0.4)
+        planet_dot, = ax_orbit.plot([], [], 'o', color='cyan', markersize=6)
+        dist_line, = ax_orbit.plot([], [], '--', color='red', alpha=0.7)
+        
+        period_seconds = period_days * 86400
+        mean_motion = 2 * np.pi / period_seconds
+
+        def update(frame_time: float) -> tuple:
+            M = mean_motion * frame_time
+            try: E = newton(lambda E: E - ecc * np.sin(E) - M, M, tol=1e-6)
+            except RuntimeError: E = M
+            
+            x, y = a * (np.cos(E) - ecc), b * np.sin(E)
+            planet_dot.set_data([x], [y])
+            dist_line.set_data([0, x], [0, y])
+            return planet_dot, dist_line
+
+        canvas_orbit.ani = animation.FuncAnimation(fig_orbit, update, frames=np.linspace(0, period_seconds, 360), interval=50, blit=True, repeat=True)
+        canvas_orbit.draw()
+
+    except (ValueError, TypeError, KeyError) as e:
+        messagebox.showerror("Animation Error", f"Could not plot orbit due to invalid or missing data.\nDetails: {e}")
+
+def search_stars(event=None):
+    """Searches the dataframe and populates the research treeview."""
+    for item in research_tree.get_children(): research_tree.delete(item)
+    query = search_var.get().strip().lower()
+    if not query: return
+
+    mask = kepler_data['star_name'].str.lower().str.contains(query, na=False)
+    results = kepler_data[mask].sort_values(by=['star_name', 'name'])
+
+    if results.empty:
+        research_tree.insert('', 'end', values=("No results found.", "", "", "", ""))
+        return
+
+    for _, row in results.iterrows():
+        research_tree.insert('', 'end', values=(
+            row.get('star_name', 'N/A'), row.get('name', 'N/A'),
+            f"{row.get('orbital_period', 0):.2f}" if pd.notna(row.get('orbital_period')) else 'N/A',
+            f"{row.get('semi_major_axis', 0):.3f}" if pd.notna(row.get('semi_major_axis')) else 'N/A',
+            row.get('discovery_year', 'N/A')))
+
+def update_plots_and_planets(event=None):
+    """Master update function called on new star selection."""
+    planets = sorted(kepler_data[kepler_data['star_name'] == star_var.get()]['name'].tolist())
+    planet_combo['values'] = planets
+    if planets:
+        planet_var.set(planets[0])
+    else:
+        planet_var.set('')
+    
+    plot_star_spectrum()
+    plot_hr_diagram()
+
+# --- GUI Setup ---
+root = tk.Tk()
+root.title("Exoplanet Data Viewer")
+root.geometry("1280x800")
+
+kepler_data = load_kepler_data()
+host_stars = sorted(kepler_data['star_name'].dropna().unique())
+
+frame = ttk.Frame(root, padding=10)
+frame.pack(fill='both', expand=True)
+
+left_panel = ttk.Frame(frame, width=250)
+left_panel.pack(side='left', fill='y', padx=(0, 10))
+left_panel.pack_propagate(False)
+
+right_panel = ttk.Frame(frame)
+right_panel.pack(side='right', expand=True, fill='both')
+notebook = ttk.Notebook(right_panel)
+notebook.pack(expand=True, fill='both')
+
+# -- Tab 1: Orbit Viewer --
+orbit_tab = ttk.Frame(notebook, padding=5)
+notebook.add(orbit_tab, text="Orbit Viewer")
+output = tk.Text(orbit_tab, height=10)
+output.pack(fill='x', pady=(0, 5))
+fig_orbit = Figure(figsize=(5, 5), dpi=100)
+ax_orbit = fig_orbit.add_subplot(111)
+canvas_orbit = FigureCanvasTkAgg(fig_orbit, master=orbit_tab)
+canvas_orbit.get_tk_widget().pack(fill='both', expand=True)
+
+# -- Tab 2: Black-Body Spectrum --
+spec_tab = ttk.Frame(notebook, padding=5)
+notebook.add(spec_tab, text="Black-Body Spectrum")
+fig_spec = Figure(figsize=(5, 5), dpi=100)
+ax_spec = fig_spec.add_subplot(111)
+canvas_spec = FigureCanvasTkAgg(fig_spec, master=spec_tab)
+canvas_spec.get_tk_widget().pack(fill='both', expand=True)
+
+# -- Tab 3: H-R Diagram --
+hr_tab = ttk.Frame(notebook, padding=5)
+notebook.add(hr_tab, text="H-R Diagram")
+fig_hr = Figure(figsize=(5, 5), dpi=100)
+ax_hr = fig_hr.add_subplot(111)
+canvas_hr = FigureCanvasTkAgg(fig_hr, master=hr_tab)
+canvas_hr.get_tk_widget().pack(fill='both', expand=True)
+
+# -- Tab 4: Research --
+research_tab = ttk.Frame(notebook, padding=10)
+notebook.add(research_tab, text="Research")
+search_frame = ttk.Frame(research_tab)
+search_frame.pack(fill='x', pady=5)
+ttk.Label(search_frame, text="Search Star Name:").pack(side='left')
+search_var = tk.StringVar()
+search_entry = ttk.Entry(search_frame, textvariable=search_var)
+search_entry.pack(side='left', expand=True, fill='x', padx=5)
+search_entry.bind("<Return>", search_stars)
+ttk.Button(search_frame, text="Search", command=search_stars).pack(side='left')
+tree_frame = ttk.Frame(research_tab)
+tree_frame.pack(expand=True, fill='both')
+cols = ('Star', 'Planet', 'Period (days)', 'Axis (AU)', 'Discovered')
+research_tree = ttk.Treeview(tree_frame, columns=cols, show='headings')
+for col in cols: research_tree.heading(col, text=col); research_tree.column(col, width=120)
+tree_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=research_tree.yview)
+research_tree.configure(yscrollcommand=tree_scroll.set)
+tree_scroll.pack(side='right', fill='y')
+research_tree.pack(side='left', expand=True, fill='both')
+
+# --- Add controls to the left panel ---
+ttk.Label(left_panel, text="Star & Planet Selection", font="-weight bold").pack(pady=(0, 5))
+ttk.Label(left_panel, text="Select Star:").pack(anchor='w')
+star_var = tk.StringVar()
+star_combo = ttk.Combobox(left_panel, textvariable=star_var, values=host_stars, state='readonly')
+star_combo.pack(fill='x', pady=(0,5))
+star_combo.bind("<<ComboboxSelected>>", update_plots_and_planets)
+
+ttk.Label(left_panel, text="Select Planet:").pack(anchor='w')
+planet_var = tk.StringVar()
+planet_combo = ttk.Combobox(left_panel, textvariable=planet_var, state='readonly')
+planet_combo.pack(fill='x')
+
+ttk.Separator(left_panel).pack(fill='x', pady=10)
+ttk.Label(left_panel, text="Actions", font="-weight bold").pack(pady=5)
+ttk.Button(left_panel, text="Animate Selected Orbit", command=calc_position).pack(pady=2, fill='x')
+ttk.Button(left_panel, text="Show Distance to Earth", command=calc_distance_to_earth).pack(pady=2, fill='x')
+ttk.Button(left_panel, text="Check Atmosphere Composition", command=check_atmosphere).pack(pady=2, fill='x')
+
+ttk.Separator(left_panel).pack(fill='x', pady=10)
+ttk.Button(left_panel, text="Exit", command=root.destroy).pack(side='bottom', pady=5, fill='x')
+
+if host_stars:
+    star_var.set(host_stars[0])
+    update_plots_and_planets()
+
+root.mainloop()
