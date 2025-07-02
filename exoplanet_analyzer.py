@@ -35,6 +35,9 @@ class ExoplanetAnalyzer:
         self.root.geometry("1280x900")
         self.root.minsize(1000, 700)
         
+        # Initialize animation object
+        self.ani = None
+        
         # Load data directly from NASA
         self.planetary_data = self.fetch_planetary_data()
         
@@ -45,7 +48,6 @@ class ExoplanetAnalyzer:
             self.host_stars = []
         
         self.setup_ui()
-        self.setup_plots()
         
         # Initialize with first star
         if self.host_stars:
@@ -67,6 +69,9 @@ class ExoplanetAnalyzer:
             response.raise_for_status()
             df = pd.read_csv(StringIO(response.text))
             logging.info(f"Fetched {len(df)} planetary records")
+            
+            # Save to cache for offline use
+            df.to_feather(CACHE_FILE)
             return df
         except Exception as e:
             logging.error(f"Planetary data fetch failed: {str(e)}")
@@ -76,8 +81,8 @@ class ExoplanetAnalyzer:
                     df = pd.read_feather(CACHE_FILE)
                     messagebox.showinfo("Using Cached Data", "Loaded data from local cache")
                     return df
-                except:
-                    pass
+                except Exception as cache_error:
+                    logging.error(f"Cache load failed: {str(cache_error)}")
             messagebox.showerror("Data Error", f"Failed to load planetary data: {str(e)}")
             return pd.DataFrame()
 
@@ -171,16 +176,12 @@ class ExoplanetAnalyzer:
         self.orbit_info.pack(fill='x', padx=10, pady=(10, 0))
         
         # Create orbit canvas
-        self.fig_orbit = Figure(figsize=(8, 6))
+        self.fig_orbit = Figure(figsize=(8, 6), facecolor='#0a0a2a')
         self.ax_orbit = self.fig_orbit.add_subplot(111)
+        self.ax_orbit.set_facecolor("black")
         self.canvas_orbit = FigureCanvasTkAgg(self.fig_orbit, master=self.orbit_tab)
         self.canvas_orbit.get_tk_widget().pack(expand=True, fill='both', padx=10, pady=10)
         
-        # Animation components
-        self.planet_dot, = self.ax_orbit.plot([], [], 'o', color='cyan', markersize=8)
-        self.dist_line, = self.ax_orbit.plot([], [], '--', color='red', alpha=0.7)
-        self.ani = None
-
     def create_spectrum_tab(self):
         """Configure black body spectrum tab"""
         self.spectrum_tab = ttk.Frame(self.notebook)
@@ -236,13 +237,6 @@ class ExoplanetAnalyzer:
         
         # Populate with real data
         self.populate_research_table()
-
-    def setup_plots(self):
-        """Initialize plot components"""
-        if hasattr(self, 'ax_orbit'):
-            self.planet_dot, = self.ax_orbit.plot([], [], 'o', color='cyan', markersize=8)
-            self.dist_line, = self.ax_orbit.plot([], [], '--', color='red', alpha=0.7)
-            self.ani = None
 
     def populate_research_table(self):
         """Fill research table with NASA data"""
@@ -434,17 +428,28 @@ class ExoplanetAnalyzer:
             self.ax_orbit.grid(True, linestyle='--', color='gray', alpha=0.4)
             self.ax_orbit.legend(loc='upper right')
             
-            # Animation function
-            period_seconds = period_days * 86400
-            mean_motion = 2 * np.pi / period_seconds
+            # Create the planet and distance line artists
+            self.planet_dot, = self.ax_orbit.plot([], [], 'o', color='cyan', markersize=8)
+            self.dist_line, = self.ax_orbit.plot([], [], '--', color='red', alpha=0.7)
             
-            def update(frame):
-                M = mean_motion * frame
+            # Animation initialization function
+            def init():
+                self.planet_dot.set_data([], [])
+                self.dist_line.set_data([], [])
+                return self.planet_dot, self.dist_line
+            
+            # Animation update function
+            def animate(i):
+                # Convert frame number to angle (0 to 2*pi)
+                M = i * (2 * np.pi / 360)  # Mean anomaly at this frame
+                
+                # Solve Kepler's equation for Eccentric Anomaly (E)
                 try:
-                    E = newton(lambda E: E - ecc*np.sin(E) - M, M, tol=1e-6)
+                    E = newton(lambda E: E - ecc * np.sin(E) - M, M, tol=1e-6)
                 except RuntimeError:
                     E = M
                 
+                # Calculate coordinates
                 x = a * (np.cos(E) - ecc)
                 y = b * np.sin(E)
                 
@@ -452,11 +457,13 @@ class ExoplanetAnalyzer:
                 self.dist_line.set_data([0, x], [0, y])
                 return self.planet_dot, self.dist_line
             
+            # Create animation
             self.ani = animation.FuncAnimation(
                 self.fig_orbit,
-                update,
-                frames=np.linspace(0, period_seconds, 360),
-                interval=50,
+                animate,
+                init_func=init,
+                frames=360,  # 360 frames for a full orbit
+                interval=50,  # 50 ms per frame -> 18 seconds per orbit
                 blit=True,
                 repeat=True
             )
