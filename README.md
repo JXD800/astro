@@ -1,24 +1,25 @@
-libraries I used:
-pandas
-numpy
-matplotlib
-astropy.time
-astropy.units
-tkinter
-scipy
+the libraries I used: 
+pandas 
+numpy 
+matplotlib 
+astropy.time 
+astropy.units 
+tkinter 
+scipy 
+tenacity 
 
-pip install pandas numpy matplotlib astropy tk requests scipy
+pip install pandas numpy matplotlib astropy tk (inside the body tag scipy tenacity
 
---Creating virtual environment for Python--
+--Create a virtual environment for Python-- 
 
-conda create --name astrodata python=3.9
+conda create --name " astrodata python=3.9 
 
---running virtual env--
+--running the virtual env.-- 
 
-conda activate astrodata
+conda activate astrodata 
 
-cd where/you/put/the/directory
+the cd where/you/put/the/directory 
 
---running the python app--
+--running the python app-- 
 
-python kepler_orbit_final.py
+python - exo-planet_analyzer.py 
