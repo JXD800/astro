@@ -11,7 +11,7 @@ from scipy.optimize import newton
 import logging
 from io import StringIO
 import os
-from functools import lru_cache
+import time
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Scientific Constants
@@ -140,11 +140,11 @@ class ExoplanetAnalyzer:
         # Star selection
         ttk.Label(control_frame, text="Host Star:").grid(row=0, column=0, padx=5)
         self.star_var = tk.StringVar()
-        star_combo = ttk.Combobox(control_frame, textvariable=self.star_var, 
-                                 values=self.host_stars, state='readonly',
-                                 width=30)
-        star_combo.grid(row=0, column=1, padx=5)
-        star_combo.bind("<<ComboboxSelected>>", self.update_planets)
+        self.star_combo = ttk.Combobox(control_frame, textvariable=self.star_var, 
+                                      values=self.host_stars, state='readonly',
+                                      width=30)
+        self.star_combo.grid(row=0, column=1, padx=5)
+        self.star_combo.bind("<<ComboboxSelected>>", self.update_planets)
         
         # Planet selection
         ttk.Label(control_frame, text="Planet:").grid(row=0, column=2, padx=5)
@@ -215,6 +215,7 @@ class ExoplanetAnalyzer:
         search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
         search_entry.pack(side='left', fill='x', expand=True, padx=5)
         search_entry.bind("<Return>", self.filter_research_table)
+        ttk.Button(search_frame, text="Search", command=self.filter_research_table).pack(side='left', padx=5)
         
         # Create treeview with scrollbar
         tree_frame = ttk.Frame(self.research_tab)
@@ -419,7 +420,7 @@ class ExoplanetAnalyzer:
             self.orbit_info.insert(tk.END, f"Orbital Period: {period_days:.2f} days\n")
             self.orbit_info.insert(tk.END, f"Semi-Major Axis: {a:.3f} AU\n")
             self.orbit_info.insert(tk.END, f"Eccentricity: {ecc:.3f}\n")
-            self.orbit_info.insert(tk.END, f"Discovery Year: {int(p['disc_year'])}")
+            self.orbit_info.insert(tk.END, f"Discovery Year: {int(p['disc_year']) if not pd.isna(p['disc_year']) else 'N/A'}")
             
             # Setup plot
             self.ax_orbit.clear()
