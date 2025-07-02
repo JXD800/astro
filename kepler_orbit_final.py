@@ -9,6 +9,7 @@ from matplotlib import animation
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from scipy.optimize import newton
 import logging
+from io import StringIO
 
 # Scientific Constants
 H_PLANCK = 6.626e-34
@@ -31,7 +32,7 @@ class ExoplanetAnalyzer:
         
         # Load data directly from NASA
         self.planetary_data = self.fetch_planetary_data()
-        self.host_stars = sorted(self.planetary_data['hostname'].dropna().unique())
+        self.host_stars = sorted(self.planetary_data['hostname'].dropna().unique()) if not self.planetary_data.empty else []
         
         self.setup_ui()
         self.setup_plots()
@@ -51,7 +52,9 @@ class ExoplanetAnalyzer:
                          "st_teff,st_spectype,sy_dist from pscomppars",
                 'format': 'csv'
             }
-            df = pd.read_csv(url, params=params)
+            response = requests.get(url, params=params)
+            response.raise_for_status()  # Raise error for bad status
+            df = pd.read_csv(StringIO(response.text))
             logging.info(f"Fetched {len(df)} planetary records")
             return df
         except Exception as e:
@@ -68,7 +71,9 @@ class ExoplanetAnalyzer:
                          f"where pl_name = '{planet_name}'",
                 'format': 'csv'
             }
-            df = pd.read_csv(url, params=params)
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            df = pd.read_csv(StringIO(response.text))
             logging.info(f"Fetched atmospheric data for {planet_name}")
             return df
         except Exception as e:
@@ -84,7 +89,9 @@ class ExoplanetAnalyzer:
                          f"from transmissionspec where pl_name = '{planet_name}'",
                 'format': 'csv'
             }
-            df = pd.read_csv(url, params=params)
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            df = pd.read_csv(StringIO(response.text))
             logging.info(f"Fetched spectroscopy data for {planet_name}")
             return df
         except Exception as e:
@@ -95,7 +102,7 @@ class ExoplanetAnalyzer:
         """Initialize main UI components"""
         # Create notebook
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(expand=True, fill='both')
+        self.notebook.pack(expand=True, fill='both', padx=10, pady=10)
         
         # Create tabs
         self.create_orbit_tab()
@@ -189,6 +196,9 @@ class ExoplanetAnalyzer:
 
     def populate_research_table(self):
         """Fill research table with NASA data"""
+        if self.planetary_data.empty:
+            return
+            
         for item in self.research_tree.get_children():
             self.research_tree.delete(item)
         
@@ -204,6 +214,9 @@ class ExoplanetAnalyzer:
     def update_planets(self, event=None):
         """Update planet list when star changes"""
         star = self.star_var.get()
+        if self.planetary_data.empty or not star:
+            return
+            
         planets = self.planetary_data[self.planetary_data['hostname'] == star]['pl_name'].tolist()
         self.planet_combo['values'] = planets
         if planets:
@@ -216,12 +229,14 @@ class ExoplanetAnalyzer:
         self.ax_spectrum.clear()
         star = self.star_var.get()
         
-        if not star:
+        if not star or self.planetary_data.empty:
+            self.ax_spectrum.text(0.5, 0.5, "Select a star", ha='center', va='center')
+            self.canvas_spectrum.draw_idle()
             return
             
         star_data = self.planetary_data[self.planetary_data['hostname'] == star]
         if star_data.empty or pd.isna(star_data.iloc[0]['st_teff']):
-            self.ax_spectrum.text(0.5, 0.5, "Temperature data unavailable", ha='center')
+            self.ax_spectrum.text(0.5, 0.5, "Temperature data unavailable", ha='center', va='center')
             self.canvas_spectrum.draw_idle()
             return
         
@@ -247,10 +262,17 @@ class ExoplanetAnalyzer:
         self.ax_hr.clear()
         
         if self.planetary_data.empty:
+            self.ax_hr.text(0.5, 0.5, "No data available", ha='center', va='center')
+            self.canvas_hr.draw_idle()
             return
             
         # Calculate luminosity (L ∝ R²T⁴)
         valid_data = self.planetary_data.dropna(subset=['st_rad', 'st_teff'])
+        if valid_data.empty:
+            self.ax_hr.text(0.5, 0.5, "Insufficient data", ha='center', va='center')
+            self.canvas_hr.draw_idle()
+            return
+            
         valid_data['luminosity'] = (valid_data['st_rad']**2) * (valid_data['st_teff']/SOLAR_TEMP)**4
         
         self.ax_hr.scatter(
@@ -288,7 +310,7 @@ class ExoplanetAnalyzer:
     def animate_orbit(self):
         """Animate planet orbit using NASA orbital parameters"""
         planet_name = self.planet_var.get()
-        if not planet_name:
+        if not planet_name or self.planetary_data.empty:
             return
             
         if self.ani:
@@ -389,7 +411,7 @@ class ExoplanetAnalyzer:
         else:
             # Group by instrument
             for instrument, group in data.groupby('instrument'):
-                if 'flux_err' in group.columns:
+                if 'flux_err' in group.columns and not group['flux_err'].isnull().all():
                     ax.errorbar(
                         group['wavelength'],
                         group['flux'],
