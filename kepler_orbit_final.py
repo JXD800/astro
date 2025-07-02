@@ -3,290 +3,443 @@ from tkinter import ttk, messagebox
 import pandas as pd
 import numpy as np
 import requests
-from io import StringIO
-from typing import Optional, List, Dict
-import logging
-from functools import lru_cache
-
-# Matplotlib and SciPy imports
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib import animation
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from scipy.optimize import newton
+import logging
 
-# Configure logging
-logging.basicConfig(filename='exoplanet_tool.log', level=logging.INFO)
-
-# --- Constants ---
+# Scientific Constants
 H_PLANCK = 6.626e-34
 C_LIGHT = 3e8
 K_BOLTZMANN = 1.381e-23
 SOLAR_TEMP = 5778
-CACHE_SIZE = 100  # Number of API responses to cache
 
-# --- Enhanced Data Loading with Caching ---
-@lru_cache(maxsize=CACHE_SIZE)
-def fetch_complete_atmospheric_data() -> pd.DataFrame:
-    """Fetches and combines planetary, atmospheric, and molecular data"""
-    try:
-        logging.info("Fetching exoplanet data from NASA API")
-        
-        # Main planetary data
-        base_url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync"
-        params = {
-            'query': "select pl_name,hostname,pl_orbper,pl_orbsmax,pl_radj,pl_bmassj,"
-                    "disc_year,pl_orbeccen,st_mass,st_rad,st_age,st_teff,"
-                    "st_spectype,sy_dist,disc_facility,disposition from ps",
-            'format': 'csv'
-        }
-        kepler_df = pd.read_csv(f"{base_url}?{requests.compat.urlencode(params)}")
-        
-        # Rename columns consistently
-        kepler_df = kepler_df.rename(columns={
-            'pl_name': 'name', 'hostname': 'star_name', 'pl_orbper': 'orbital_period',
-            'pl_orbsmax': 'semi_major_axis', 'pl_radj': 'radius', 'pl_bmassj': 'mass',
-            'disc_year': 'discovery_year', 'pl_orbeccen': 'eccentricity',
-            'st_mass': 'star_mass', 'st_rad': 'star_radius', 'st_age': 'star_age',
-            'st_teff': 'star_temp', 'st_spectype': 'star_type', 'sy_dist': 'star_distance'
-        })
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.FileHandler('exoplanet_analyzer.log')]
+)
 
-        # Atmospheric properties
-        atm_df = pd.read_csv(f"{base_url}?query=select+*+from+atmospheres&format=csv")
+class ExoplanetAnalyzer:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("NASA Exoplanet Archive Analyzer")
+        self.root.geometry("1280x900")
         
-        # Molecular composition data
-        mol_df = pd.read_csv(f"{base_url}?query=select+*+from+molecules&format=csv")
+        # Load data directly from NASA
+        self.planetary_data = self.fetch_planetary_data()
+        self.host_stars = sorted(self.planetary_data['hostname'].dropna().unique())
         
-        # Combine all datasets
-        merged_df = pd.merge(kepler_df, atm_df, how='left', left_on='name', right_on='pl_name')
-        merged_df = pd.merge(merged_df, mol_df, how='left', left_on='name', right_on='pl_name')
+        self.setup_ui()
+        self.setup_plots()
         
-        return merged_df.drop_duplicates()
-    
-    except Exception as e:
-        logging.error(f"Data loading failed: {str(e)}")
-        messagebox.showerror("Data Error", f"Failed to load data: {str(e)}")
-        return pd.DataFrame()
+        # Initialize with first star
+        if self.host_stars:
+            self.star_var.set(self.host_stars[0])
+            self.update_planets()
 
-def fetch_real_spectroscopy_data(planet_name: str) -> Optional[pd.DataFrame]:
-    """Fetches transmission spectroscopy data with error handling"""
-    try:
-        encoded_name = requests.utils.quote(planet_name)
-        url = (
-            "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?"
-            f"query=select+wavelength,flux,flux_err,flux_unit,wavelength_unit,"
-            f"instrument,facility,reference+from+transmissionspec+"
-            f"where+pl_name='{encoded_name}'&format=csv"
-        )
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
+    def fetch_planetary_data(self) -> pd.DataFrame:
+        """Fetches confirmed exoplanet data from NASA Archive"""
+        try:
+            url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync"
+            params = {
+                'query': "select pl_name,hostname,pl_orbper,pl_orbsmax,pl_radj,"
+                         "pl_bmassj,disc_year,pl_orbeccen,st_mass,st_rad,st_age,"
+                         "st_teff,st_spectype,sy_dist from pscomppars",
+                'format': 'csv'
+            }
+            df = pd.read_csv(url, params=params)
+            logging.info(f"Fetched {len(df)} planetary records")
+            return df
+        except Exception as e:
+            logging.error(f"Planetary data fetch failed: {str(e)}")
+            messagebox.showerror("Data Error", f"Failed to load planetary data: {str(e)}")
+            return pd.DataFrame()
+
+    def fetch_atmospheric_data(self, planet_name: str) -> pd.DataFrame:
+        """Gets molecular composition data from NASA Archive"""
+        try:
+            url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync"
+            params = {
+                'query': f"select molecule,abundance,abundance_err from molecules "
+                         f"where pl_name = '{planet_name}'",
+                'format': 'csv'
+            }
+            df = pd.read_csv(url, params=params)
+            logging.info(f"Fetched atmospheric data for {planet_name}")
+            return df
+        except Exception as e:
+            logging.warning(f"Atmospheric data fetch failed for {planet_name}: {str(e)}")
+            return pd.DataFrame()
+
+    def fetch_spectroscopy_data(self, planet_name: str) -> pd.DataFrame:
+        """Gets transmission spectroscopy data from NASA Archive"""
+        try:
+            url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync"
+            params = {
+                'query': f"select wavelength,flux,flux_err,wavelength_unit,instrument "
+                         f"from transmissionspec where pl_name = '{planet_name}'",
+                'format': 'csv'
+            }
+            df = pd.read_csv(url, params=params)
+            logging.info(f"Fetched spectroscopy data for {planet_name}")
+            return df
+        except Exception as e:
+            logging.warning(f"Spectroscopy data fetch failed for {planet_name}: {str(e)}")
+            return pd.DataFrame()
+
+    def setup_ui(self):
+        """Initialize main UI components"""
+        # Create notebook
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(expand=True, fill='both')
         
-        csv_data = response.content.decode("utf-8")
-        if not csv_data.strip() or "empty" in csv_data.lower():
-            return None
+        # Create tabs
+        self.create_orbit_tab()
+        self.create_spectrum_tab()
+        self.create_hr_tab()
+        self.create_research_tab()
+        self.create_controls()
+        
+    def create_controls(self):
+        """Create control panel"""
+        control_frame = ttk.Frame(self.root)
+        control_frame.pack(fill='x', padx=10, pady=10)
+        
+        # Star selection
+        ttk.Label(control_frame, text="Host Star:").grid(row=0, column=0, padx=5)
+        self.star_var = tk.StringVar()
+        star_combo = ttk.Combobox(control_frame, textvariable=self.star_var, 
+                                 values=self.host_stars, state='readonly')
+        star_combo.grid(row=0, column=1, padx=5)
+        star_combo.bind("<<ComboboxSelected>>", self.update_planets)
+        
+        # Planet selection
+        ttk.Label(control_frame, text="Planet:").grid(row=0, column=2, padx=5)
+        self.planet_var = tk.StringVar()
+        self.planet_combo = ttk.Combobox(control_frame, textvariable=self.planet_var, 
+                                        state='readonly')
+        self.planet_combo.grid(row=0, column=3, padx=5)
+        
+        # Action buttons
+        ttk.Button(control_frame, text="Animate Orbit", 
+                  command=self.animate_orbit).grid(row=0, column=4, padx=5)
+        ttk.Button(control_frame, text="Show Atmosphere", 
+                  command=self.show_atmosphere).grid(row=0, column=5, padx=5)
+        
+    def create_orbit_tab(self):
+        """Configure orbit animation tab"""
+        self.orbit_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.orbit_tab, text="Orbit Viewer")
+        
+        self.fig_orbit = Figure(figsize=(8, 6))
+        self.ax_orbit = self.fig_orbit.add_subplot(111)
+        self.canvas_orbit = FigureCanvasTkAgg(self.fig_orbit, master=self.orbit_tab)
+        self.canvas_orbit.get_tk_widget().pack(expand=True, fill='both')
+        
+        # Animation components
+        self.planet_dot, = self.ax_orbit.plot([], [], 'o', color='cyan', markersize=6)
+        self.dist_line, = self.ax_orbit.plot([], [], '--', color='red', alpha=0.7)
+        self.ani = None
+
+    def create_spectrum_tab(self):
+        """Configure black body spectrum tab"""
+        self.spectrum_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.spectrum_tab, text="Stellar Spectrum")
+        
+        self.fig_spectrum = Figure(figsize=(8, 6))
+        self.ax_spectrum = self.fig_spectrum.add_subplot(111)
+        self.canvas_spectrum = FigureCanvasTkAgg(self.fig_spectrum, master=self.spectrum_tab)
+        self.canvas_spectrum.get_tk_widget().pack(expand=True, fill='both')
+
+    def create_hr_tab(self):
+        """Configure HR diagram tab"""
+        self.hr_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.hr_tab, text="HR Diagram")
+        
+        self.fig_hr = Figure(figsize=(8, 6))
+        self.ax_hr = self.fig_hr.add_subplot(111)
+        self.canvas_hr = FigureCanvasTkAgg(self.fig_hr, master=self.hr_tab)
+        self.canvas_hr.get_tk_widget().pack(expand=True, fill='both')
+
+    def create_research_tab(self):
+        """Configure research tab with data table"""
+        self.research_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.research_tab, text="Research")
+        
+        columns = ("Planet", "Star", "Period (days)", "Distance (pc)", "Radius (Jup)")
+        self.research_tree = ttk.Treeview(self.research_tab, columns=columns, show='headings')
+        
+        for col in columns:
+            self.research_tree.heading(col, text=col)
+            self.research_tree.column(col, width=120)
+        
+        vsb = ttk.Scrollbar(self.research_tab, orient="vertical", 
+                           command=self.research_tree.yview)
+        self.research_tree.configure(yscrollcommand=vsb.set)
+        
+        vsb.pack(side="right", fill="y")
+        self.research_tree.pack(expand=True, fill='both')
+        
+        # Populate with real data
+        self.populate_research_table()
+
+    def populate_research_table(self):
+        """Fill research table with NASA data"""
+        for item in self.research_tree.get_children():
+            self.research_tree.delete(item)
+        
+        for _, row in self.planetary_data.iterrows():
+            self.research_tree.insert("", "end", values=(
+                row['pl_name'],
+                row['hostname'],
+                f"{row['pl_orbper']:.2f}" if not pd.isna(row['pl_orbper']) else "N/A",
+                f"{row['sy_dist']:.1f}" if not pd.isna(row['sy_dist']) else "N/A",
+                f"{row['pl_radj']:.2f}" if not pd.isna(row['pl_radj']) else "N/A"
+            ))
+
+    def update_planets(self, event=None):
+        """Update planet list when star changes"""
+        star = self.star_var.get()
+        planets = self.planetary_data[self.planetary_data['hostname'] == star]['pl_name'].tolist()
+        self.planet_combo['values'] = planets
+        if planets:
+            self.planet_var.set(planets[0])
+        self.plot_black_body_spectrum()
+        self.plot_hr_diagram()
+
+    def plot_black_body_spectrum(self):
+        """Plot star's black body spectrum using NASA temperature data"""
+        self.ax_spectrum.clear()
+        star = self.star_var.get()
+        
+        if not star:
+            return
             
-        df = pd.read_csv(StringIO(csv_data))
-        return df[df['flux'].notna()]  # Filter out null flux values
+        star_data = self.planetary_data[self.planetary_data['hostname'] == star]
+        if star_data.empty or pd.isna(star_data.iloc[0]['st_teff']):
+            self.ax_spectrum.text(0.5, 0.5, "Temperature data unavailable", ha='center')
+            self.canvas_spectrum.draw_idle()
+            return
         
-    except Exception as e:
-        logging.warning(f"Spectroscopy data fetch failed for {planet_name}: {str(e)}")
-        return None
+        T = star_data.iloc[0]['st_teff']
+        wavelengths = np.linspace(100e-9, 3000e-9, 500)
+        
+        # Planck's law
+        spectral_radiance = (2 * H_PLANCK * C_LIGHT**2 / wavelengths**5) / (
+            np.exp(H_PLANCK * C_LIGHT / (wavelengths * K_BOLTZMANN * T)) - 1)
+        
+        # Normalize
+        normalized = spectral_radiance / np.max(spectral_radiance)
+        
+        self.ax_spectrum.plot(wavelengths * 1e9, normalized, color='orange')
+        self.ax_spectrum.set_title(f"Black Body Spectrum: {star} (T={T:.0f} K)")
+        self.ax_spectrum.set_xlabel("Wavelength (nm)")
+        self.ax_spectrum.set_ylabel("Normalized Intensity")
+        self.ax_spectrum.grid(True, linestyle='--', alpha=0.6)
+        self.canvas_spectrum.draw_idle()
 
-# --- Enhanced Atmospheric Analysis ---
-def plot_complete_atmosphere(planet_name: str):
-    """Creates comprehensive atmospheric analysis window"""
-    try:
-        popup = tk.Toplevel(root)
-        popup.title(f"Atmospheric Analysis - {planet_name}")
-        popup.geometry("1200x800")
+    def plot_hr_diagram(self):
+        """Plot HR diagram using NASA stellar data"""
+        self.ax_hr.clear()
         
-        # Notebook for multiple analysis tabs
-        atm_notebook = ttk.Notebook(popup)
-        atm_notebook.pack(expand=True, fill='both')
+        if self.planetary_data.empty:
+            return
+            
+        # Calculate luminosity (L ∝ R²T⁴)
+        valid_data = self.planetary_data.dropna(subset=['st_rad', 'st_teff'])
+        valid_data['luminosity'] = (valid_data['st_rad']**2) * (valid_data['st_teff']/SOLAR_TEMP)**4
         
-        # Tab 1: Transmission Spectrum
-        spec_tab = ttk.Frame(atm_notebook)
-        fig_spec = Figure(figsize=(10, 6))
-        ax_spec = fig_spec.add_subplot(111)
+        self.ax_hr.scatter(
+            valid_data['st_teff'],
+            valid_data['luminosity'],
+            alpha=0.3,
+            s=5,
+            label='Exoplanet Host Stars'
+        )
         
-        # Fetch and plot spectral data
-        spec_data = fetch_real_spectroscopy_data(planet_name)
-        if spec_data is not None and not spec_data.empty:
-            for instrument, group in spec_data.groupby('instrument'):
+        # Highlight selected star
+        if self.star_var.get():
+            star_data = valid_data[valid_data['hostname'] == self.star_var.get()]
+            if not star_data.empty:
+                star = star_data.iloc[0]
+                self.ax_hr.scatter(
+                    star['st_teff'],
+                    star['luminosity'],
+                    color='red',
+                    s=50,
+                    edgecolor='black',
+                    label=f'Selected: {self.star_var.get()}'
+                )
+        
+        self.ax_hr.set_yscale('log')
+        self.ax_hr.set_xscale('log')
+        self.ax_hr.set_xlim(self.ax_hr.get_xlim()[::-1])  # Reverse for HR diagram
+        self.ax_hr.set_title("Hertzsprung-Russell Diagram")
+        self.ax_hr.set_xlabel("Effective Temperature (K)")
+        self.ax_hr.set_ylabel("Luminosity (Solar Units)")
+        self.ax_hr.legend()
+        self.ax_hr.grid(True, which="both", ls="--", alpha=0.5)
+        self.canvas_hr.draw_idle()
+
+    def animate_orbit(self):
+        """Animate planet orbit using NASA orbital parameters"""
+        planet_name = self.planet_var.get()
+        if not planet_name:
+            return
+            
+        if self.ani:
+            self.ani.event_source.stop()
+            
+        planet_data = self.planetary_data[self.planetary_data['pl_name'] == planet_name]
+        if planet_data.empty:
+            return
+            
+        p = planet_data.iloc[0]
+        
+        try:
+            a = float(p['pl_orbsmax'])  # Semi-major axis (AU)
+            period_days = float(p['pl_orbper'])  # Orbital period (days)
+            ecc = float(p['pl_orbeccen']) if pd.notna(p['pl_orbeccen']) else 0.0
+            
+            # Calculate orbit path
+            b = a * np.sqrt(1 - ecc**2)
+            theta = np.linspace(0, 2*np.pi, 360)
+            x_orb = a * (np.cos(theta) - ecc)
+            y_orb = b * np.sin(theta)
+            
+            # Setup plot
+            self.ax_orbit.clear()
+            self.ax_orbit.plot(x_orb, y_orb, 'w--', alpha=0.5)
+            self.ax_orbit.plot(0, 0, 'o', color='gold', markersize=12)
+            self.ax_orbit.set_title(f"Orbit of {planet_name}")
+            self.ax_orbit.set_facecolor("black")
+            self.ax_orbit.set_xlim(-a*1.5, a*1.5)
+            self.ax_orbit.set_ylim(-a*1.5, a*1.5)
+            self.ax_orbit.set_aspect('equal')
+            self.ax_orbit.grid(True, linestyle='--', color='gray', alpha=0.4)
+            
+            # Animation function
+            period_seconds = period_days * 86400
+            mean_motion = 2 * np.pi / period_seconds
+            
+            def update(frame):
+                M = mean_motion * frame
+                try:
+                    E = newton(lambda E: E - ecc*np.sin(E) - M, M, tol=1e-6)
+                except RuntimeError:
+                    E = M
+                
+                x = a * (np.cos(E) - ecc)
+                y = b * np.sin(E)
+                
+                self.planet_dot.set_data([x], [y])
+                self.dist_line.set_data([0, x], [0, y])
+                return self.planet_dot, self.dist_line
+            
+            self.ani = animation.FuncAnimation(
+                self.fig_orbit,
+                update,
+                frames=np.linspace(0, period_seconds, 360),
+                interval=50,
+                blit=True,
+                repeat=True
+            )
+            
+            self.canvas_orbit.draw_idle()
+            
+        except (ValueError, TypeError) as e:
+            messagebox.showerror("Animation Error", f"Invalid data for orbit: {str(e)}")
+
+    def show_atmosphere(self):
+        """Display atmospheric composition using NASA data"""
+        planet_name = self.planet_var.get()
+        if not planet_name:
+            return
+            
+        popup = tk.Toplevel(self.root)
+        popup.title(f"Atmospheric Composition - {planet_name}")
+        popup.geometry("1000x700")
+        
+        notebook = ttk.Notebook(popup)
+        notebook.pack(expand=True, fill='both')
+        
+        # Transmission Spectrum Tab
+        spec_frame = ttk.Frame(notebook)
+        self.plot_transmission_spectrum(spec_frame, planet_name)
+        notebook.add(spec_frame, text="Transmission Spectrum")
+        
+        # Molecular Abundance Tab
+        mol_frame = ttk.Frame(notebook)
+        self.plot_molecular_abundance(mol_frame, planet_name)
+        notebook.add(mol_frame, text="Molecular Abundance")
+
+    def plot_transmission_spectrum(self, parent, planet_name):
+        """Plot actual transmission spectrum from NASA"""
+        fig = Figure(figsize=(8, 5))
+        ax = fig.add_subplot(111)
+        
+        data = self.fetch_spectroscopy_data(planet_name)
+        
+        if data.empty:
+            ax.text(0.5, 0.5, "No spectroscopy data available", ha='center', va='center')
+        else:
+            # Group by instrument
+            for instrument, group in data.groupby('instrument'):
                 if 'flux_err' in group.columns:
-                    ax_spec.errorbar(
-                        group['wavelength'], group['flux'], 
+                    ax.errorbar(
+                        group['wavelength'],
+                        group['flux'],
                         yerr=group['flux_err'],
-                        fmt='o-', label=f"{instrument} ({group['facility'].iloc[0]})",
+                        fmt='o',
+                        label=f"{instrument}",
                         capsize=3
                     )
                 else:
-                    ax_spec.plot(
-                        group['wavelength'], group['flux'], 
-                        'o-', label=f"{instrument} ({group['facility'].iloc[0]})"
+                    ax.plot(
+                        group['wavelength'],
+                        group['flux'],
+                        'o-',
+                        label=f"{instrument}"
                     )
             
-            ax_spec.set_title(f"Transmission Spectrum - {planet_name}")
-            ax_spec.set_xlabel(f"Wavelength ({group['wavelength_unit'].iloc[0]})")
-            ax_spec.set_ylabel(f"Transit Depth ({group['flux_unit'].iloc[0]})")
-            ax_spec.legend()
-            ax_spec.grid(True)
+            ax.set_title(f"Transmission Spectrum: {planet_name}")
+            ax.set_xlabel(f"Wavelength ({data['wavelength_unit'].iloc[0]})")
+            ax.set_ylabel("Transit Depth")
+            ax.legend()
+            ax.grid(True)
+        
+        canvas = FigureCanvasTkAgg(fig, master=parent)
+        canvas.draw()
+        canvas.get_tk_widget().pack(expand=True, fill='both')
+
+    def plot_molecular_abundance(self, parent, planet_name):
+        """Plot molecular abundance from NASA data"""
+        fig = Figure(figsize=(8, 5))
+        ax = fig.add_subplot(111)
+        
+        data = self.fetch_atmospheric_data(planet_name)
+        
+        if data.empty:
+            ax.text(0.5, 0.5, "No molecular data available", ha='center', va='center')
         else:
-            ax_spec.text(0.5, 0.5, "No spectral data available", ha='center')
-        
-        canvas_spec = FigureCanvasTkAgg(fig_spec, spec_tab)
-        canvas_spec.get_tk_widget().pack(expand=True, fill='both')
-        atm_notebook.add(spec_tab, text="Transmission Spectrum")
-        
-        # Tab 2: Molecular Abundances
-        mol_tab = ttk.Frame(atm_notebook)
-        fig_mol = Figure(figsize=(10, 6))
-        ax_mol = fig_mol.add_subplot(111)
-        
-        # Get molecular data for this planet
-        planet_data = kepler_data[kepler_data['name'] == planet_name]
-        if planet_data is not None and not planet_data.empty and 'molecule' in planet_data.columns:
-            molecules = planet_data['molecule'].dropna().unique()
-            if len(molecules) > 0:
-                abundances = [
-                    planet_data[planet_data['molecule'] == m]['abundance'].mean() 
-                    for m in molecules
-                ]
-                ax_mol.bar(molecules, abundances)
-                ax_mol.set_title("Molecular Abundances")
-                ax_mol.set_ylabel("Abundance (ppm)")
-                ax_mol.tick_params(axis='x', rotation=45)
-            else:
-                ax_mol.text(0.5, 0.5, "No molecular data available", ha='center')
-        else:
-            ax_mol.text(0.5, 0.5, "No molecular data available", ha='center')
-        
-        canvas_mol = FigureCanvasTkAgg(fig_mol, mol_tab)
-        canvas_mol.get_tk_widget().pack(expand=True, fill='both')
-        atm_notebook.add(mol_tab, text="Molecular Composition")
-        
-        # Tab 3: Atmospheric Properties
-        table_tab = ttk.Frame(atm_notebook)
-        columns = ['atm_mass', 'atm_comp', 'atm_measurement', 'atm_altitude']
-        
-        # Create treeview with scrollbar
-        tree_frame = ttk.Frame(table_tab)
-        tree_frame.pack(expand=True, fill='both')
-        
-        atm_table = ttk.Treeview(tree_frame, columns=columns, show='headings')
-        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=atm_table.yview)
-        atm_table.configure(yscrollcommand=scrollbar.set)
-        
-        for col in columns:
-            atm_table.heading(col, text=col.replace('_', ' ').title())
-            atm_table.column(col, width=150, anchor='center')
-        
-        if not planet_data.empty:
-            for _, row in planet_data.iterrows():
-                if pd.notna(row.get('atm_mass')):
-                    atm_table.insert('', 'end', values=[row.get(col, 'N/A') for col in columns])
-        
-        scrollbar.pack(side="right", fill="y")
-        atm_table.pack(side="left", expand=True, fill="both")
-        
-        # Add tooltip functionality
-        def create_tooltip(widget, text):
-            tooltip = tk.Toplevel(widget)
-            tooltip.wm_overrideredirect(True)
-            label = ttk.Label(tooltip, text=text, background="#ffffe0", relief="solid", borderwidth=1)
-            label.pack()
+            molecules = data['molecule'].tolist()
+            abundances = data['abundance'].tolist()
             
-            def motion(event):
-                tooltip.geometry(f"+{event.x_root+20}+{event.y_root+10}")
-            
-            widget.bind("<Motion>", motion)
-            widget.bind("<Leave>", lambda e: tooltip.destroy())
+            ax.bar(molecules, abundances)
+            ax.set_title(f"Molecular Abundance: {planet_name}")
+            ax.set_ylabel("Abundance")
+            ax.tick_params(axis='x', rotation=45)
+            ax.grid(True, axis='y')
         
-        # Example tooltip
-        create_tooltip(atm_table, "Atmospheric properties from NASA Exoplanet Archive")
-        
-        atm_notebook.add(table_tab, text="Atmospheric Properties")
-        
-    except Exception as e:
-        logging.error(f"Atmosphere plot failed for {planet_name}: {str(e)}")
-        messagebox.showerror("Error", f"Failed to create atmospheric analysis: {str(e)}")
+        canvas = FigureCanvasTkAgg(fig, master=parent)
+        canvas.draw()
+        canvas.get_tk_widget().pack(expand=True, fill='both')
 
-# --- Core Analysis Functions ---
-def cleanup_animation():
-    """Properly cleans up existing animation"""
-    if hasattr(canvas_orbit, 'ani'):
-        canvas_orbit.ani.event_source.stop()
-        del canvas_orbit.ani
-
-def plot_hr_diagram():
-    """Plots Hertzsprung-Russell diagram with filtered data"""
-    try:
-        ax_hr.clear()
-        filtered_data = apply_filters()
-        hr_data = filtered_data.dropna(subset=['star_temp', 'star_radius']).copy()
-        
-        if hr_data.empty:
-            ax_hr.text(0.5, 0.5, "Not Enough Data for H-R Diagram", ha='center', va='center')
-            canvas_hr.draw()
-            return
-
-        hr_data['luminosity'] = (hr_data['star_radius']**2) * (hr_data['star_temp'] / SOLAR_TEMP)**4
-        ax_hr.scatter(hr_data['star_temp'], hr_data['luminosity'], alpha=0.3, s=5, label='Exoplanet Host Stars')
-
-        selected_star_data = hr_data[hr_data['star_name'] == star_var.get()]
-        if not selected_star_data.empty:
-            star = selected_star_data.iloc[0]
-            ax_hr.scatter(star['star_temp'], star['luminosity'], color='red', s=50, 
-                          edgecolor='black', zorder=5, label=f'Selected: {star_var.get()}')
-
-        ax_hr.set_yscale('log')
-        ax_hr.set_xscale('log')
-        ax_hr.set_xlim(ax_hr.get_xlim()[::-1])
-        ax_hr.set_title("Hertzsprung-Russell Diagram")
-        ax_hr.set_xlabel("Effective Temperature (K)")
-        ax_hr.set_ylabel("Luminosity (Solar Units)")
-        ax_hr.grid(True, which="both", ls="--", alpha=0.5)
-        ax_hr.legend()
-        canvas_hr.draw()
-        
-    except Exception as e:
-        logging.error(f"HR Diagram failed: {str(e)}")
-        messagebox.showerror("Error", f"Failed to plot HR Diagram: {str(e)}")
-
-def apply_filters() -> pd.DataFrame:
-    """Applies user-selected filters to the dataset"""
-    filtered = kepler_data.copy()
-    try:
-        if show_atmosphere.get():
-            filtered = filtered[filtered['atm_mass'].notna()]
-        if show_confirmed.get() and 'disposition' in filtered.columns:
-            filtered = filtered[filtered['disposition'] == 'Confirmed']
-        return filtered
-    except Exception as e:
-        logging.warning(f"Filter application failed: {str(e)}")
-        return kepler_data
-
-# [Rest of the functions (plot_star_spectrum, calc_position, etc.) remain the same as previous version...]
-
-# --- Enhanced GUI Setup ---
-root = tk.Tk()
-root.title("NASA Exoplanet Archive - Atmospheric Analysis Tool")
-root.geometry("1280x900")
-root.minsize(1000, 700)  # Set minimum window size
-
-# Configure grid weights for responsive layout
-root.grid_rowconfigure(0, weight=1)
-root.grid_columnconfigure(0, weight=1)
-
-# Load data with atmospheric properties
-kepler_data = fetch_complete_atmospheric_data()
-host_stars = sorted(kepler_data['star_name'].dropna().unique())
-
-# [Rest of the GUI setup remains the same as previous version...]
-
-# Initialize with first star
-if host_stars:
-    star_var.set(host_stars[0])
-    update_plots_and_planets()
-
-root.mainloop()
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ExoplanetAnalyzer(root)
+    root.mainloop()
